@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table
 from reportlab.lib.styles import getSampleStyleSheet
 import qrcode
 
@@ -26,7 +26,6 @@ FORMS_DIR = "pdf_generated"
 
 os.makedirs(FORMS_DIR, exist_ok=True)
 
-# Initialisation des registres en session
 if "registre_global" not in st.session_state:
     st.session_state.registre_global = []
 
@@ -39,12 +38,16 @@ def charger_questions():
             "flash": [
                 {
                     "minutes": 8, "secondes": 30,
-                    "questions_pool": ["Allez-vous réaliser des travaux par point chaud ?"],
+                    "texte": "Allez-vous réaliser des travaux par point chaud ?",
+                    "reponse": "Non",
+                    "points": 0.5,
                     "declenche_engins": False
                 },
                 {
                     "minutes": 17, "secondes": 15,
-                    "questions_pool": ["Allez-vous utiliser un engin de manutention, une nacelle ou une grue sur site ?"],
+                    "texte": "Allez-vous utiliser un engin de manutention, une nacelle ou une grue sur site ?",
+                    "reponse": "Oui",
+                    "points": 0.5,
                     "declenche_engins": True
                 }
             ],
@@ -54,20 +57,11 @@ def charger_questions():
                     "texte": "En cas d'alarme incendie, quelle est la conduite à tenir ?", 
                     "options": ["Attendre des consignes", "Rejoindre le point de rassemblement", "Continuer son travail"], 
                     "reponse": 1, 
-                    "points": 1, 
+                    "points": 1.0, 
                     "eliminatoire": True
                 }
             ],
-            "engins": [
-                {
-                    "id": "q_eng_1", 
-                    "texte": "Quel document est obligatoire pour la conduite d'un engin sur site ?", 
-                    "options": ["Permis B uniquement", "Autorisation de conduite employeur + CACES"], 
-                    "reponse": 1, 
-                    "points": 1, 
-                    "eliminatoire": True
-                }
-            ]
+            "engins": []
         }
         with open(QUESTIONS_FILE, 'w', encoding='utf-8') as f:
             json.dump(def_q, f, ensure_ascii=False, indent=4)
@@ -164,7 +158,7 @@ if page == "🏢 Portail Intervenant":
                 else:
                     st.error("Veuillez remplir vos informations nominatives.")
 
-    # ÉTAPE 2 : VISIONNAGE VIDÉO & QUESTIONS-FLASH
+    # ÉTAPE 2 : VISIONNAGE VIDÉO & QUESTIONS-FLASH (VRAI / FAUX)
     elif st.session_state.step == 2:
         st.subheader("2. Sensibilisation aux Risques Site")
         
@@ -177,17 +171,18 @@ if page == "🏢 Portail Intervenant":
 
         q_db = charger_questions()
         st.markdown("---")
-        st.subheader("❓ Question-Flash Sécurité")
+        st.subheader("❓ Questions-Flash (Auto-évaluation)")
         
         flash_list = q_db.get("flash", [])
         if len(flash_list) > 0:
             for idx, f in enumerate(flash_list):
-                pool = f.get("questions_pool", [])
-                if pool:
-                    q_select = pool[0]
-                    engins_opt = st.radio(f"**Question-Flash ({f.get('minutes',0)}m{f.get('secondes',0)}s) : {q_select}**", ["Non", "Oui"], key=f"flash_{idx}")
-                    if engins_opt == "Oui" and f.get("declenche_engins"):
-                        st.session_state.reponses_flash_engins = True
+                ans = st.radio(
+                    f"**Question-Flash ({f.get('minutes',0)}m{f.get('secondes',0)}s) : {f.get('texte','')}**", 
+                    ["Vrai", "Faux"], 
+                    key=f"flash_{idx}"
+                )
+                if ans == "Vrai" and f.get("declenche_engins"):
+                    st.session_state.reponses_flash_engins = True
 
         if st.button("Accéder au Questionnaire Final"):
             st.session_state.step = 3
@@ -202,15 +197,11 @@ if page == "🏢 Portail Intervenant":
         st.markdown("### **Tronc Commun Général**")
         for idx, q in enumerate(q_db.get("general", [])):
             opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
-            reponses_gen[idx] = st.radio(f"**Q{idx+1}. {q['texte']}** {'*(Éliminatoire)*' if q.get('eliminatoire') else ''}", opts, key=f"gen_{idx}")
-
-        reponses_eng = {}
-        if st.session_state.reponses_flash_engins and len(q_db.get("engins", [])) > 0:
-            st.markdown("---")
-            st.markdown("### **Module Spécifique Engins / Grues**")
-            for idx, q in enumerate(q_db.get("engins", [])):
-                opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
-                reponses_eng[idx] = st.radio(f"**Q_Engin_{idx+1}. {q['texte']}**", opts, key=f"eng_{idx}")
+            reponses_gen[idx] = st.radio(
+                f"**Q{idx+1}. {q['texte']}** *(Barème : {q.get('points', 1.0)} pt)* {'*(Éliminatoire)*' if q.get('eliminatoire') else ''}", 
+                opts, 
+                key=f"gen_{idx}"
+            )
 
         st.markdown("---")
         st.subheader("4. Attestation sur l'honneur & Signature")
@@ -219,13 +210,13 @@ if page == "🏢 Portail Intervenant":
         canvas_result = st_canvas(stroke_width=2, stroke_color="#003B71", background_color="#FAFAFA", height=130, key="sig_canvas")
 
         if st.button("Valider et Soumettre mon Accueil Sécurité"):
-            score_gen = 0
+            score_gen = 0.0
             fautes_elim = 0
             for idx, q in enumerate(q_db.get("general", [])):
                 opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
                 rep_ind = opts.index(reponses_gen[idx]) if reponses_gen[idx] in opts else -1
                 if rep_ind == int(q["reponse"]):
-                    score_gen += int(q.get("points", 1))
+                    score_gen += float(q.get("points", 1.0))
                 elif q.get("eliminatoire"):
                     fautes_elim += 1
 
@@ -234,7 +225,7 @@ if page == "🏢 Portail Intervenant":
             ud["score_general"] = score_gen
             ud["timestamp"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-            if fautes_elim == 0 and score_gen >= 1:
+            if fautes_elim == 0 and score_gen >= 1.0:
                 ud["statut_general"] = "VALIDE"
                 ud["statut_engins"] = "AUTORISÉE" if st.session_state.reponses_flash_engins else "NON_CONCERNE"
                 st.session_state.registre_global.append(ud)
@@ -248,13 +239,13 @@ if page == "🏢 Portail Intervenant":
             st.session_state.step = 4
             st.rerun()
 
-    # ÉTAPE 4 : ÉCRAN FINAL (DISPARITION DU QUESTIONNAIRE)
+    # ÉTAPE 4 : ÉCRAN FINAL (RÉSULTATS ET ATTENTION PDF)
     elif st.session_state.step == 4:
         res = st.session_state.get("resultat_final", {})
         if res.get("status") == "SUCCESS":
             st.balloons()
             st.success("🟢 ACCUEIL SÉCURITÉ VALIDÉ !")
-            st.write(f"Bravo **{res['data']['prenom']} {res['data']['nom']}**, votre accueil sécurité a été enregistré avec succès.")
+            st.write(f"Bravo **{res['data']['prenom']} {res['data']['nom']}**, votre score final est de **{res['data']['score_general']} pt(s)**.")
             
             with open(res["pdf"], "rb") as f:
                 st.download_button("📄 Télécharger mon Attestation Sécurité PDF", f, file_name=os.path.basename(res["pdf"]))
@@ -287,18 +278,53 @@ elif page == "⚙️ Espace Administrateur HSE":
                 st.success("URL vidéo enregistrée !")
 
             st.markdown("---")
-            st.subheader("2. Editeur de Questionnaires (Style Microsoft Forms)")
             q_data = charger_questions()
 
-            # CONFIGURATION DES QUESTIONS GENERALES
-            st.markdown("### 📋 Questionnaire Général (Tronc Commun)")
+            # 2. QUESTIONS-FLASH (VRAI / FAUX)
+            st.subheader("2. Questions-Flash pendant la vidéo (Vrai / Faux)")
+            new_flash = []
+            flash_curr = q_data.get("flash", [])
+            nb_flash = st.number_input("Nombre de questions-flash", min_value=1, max_value=15, value=len(flash_curr))
+
+            for j in range(int(nb_flash)):
+                with st.expander(f"⚡ Question-Flash n°{j+1}", expanded=True):
+                    f_item = flash_curr[j] if j < len(flash_curr) else {}
+                    
+                    f_txt = st.text_input(f"Intitulé de la question-flash {j+1}", value=f_item.get("texte", ""), key=f"ftxt_{j}")
+                    
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        f_min = st.number_input("Minute d'arrêt", min_value=0, value=f_item.get("minutes", 0), key=f"fmin_{j}")
+                    with c2:
+                        f_sec = st.number_input("Seconde d'arrêt", min_value=0, max_value=59, value=f_item.get("secondes", 0), key=f"fsec_{j}")
+                    with c3:
+                        f_rep = st.selectbox("Réponse attendue", ["Vrai", "Faux"], index=0 if f_item.get("reponse") == "Vrai" else 1, key=f"frep_{j}")
+
+                    col_pts_f, col_eng_f = st.columns(2)
+                    with col_pts_f:
+                        f_pts = st.number_input("Points attribués", min_value=0.5, max_value=2.0, step=0.5, value=float(f_item.get("points", 0.5)), key=f"fpts_{j}")
+                    with col_eng_f:
+                        f_engins = st.checkbox("Déclenche le module engins si VRAI", value=f_item.get("declenche_engins", False), key=f"feng_{j}")
+
+                    new_flash.append({
+                        "minutes": f_min,
+                        "secondes": f_sec,
+                        "texte": f_txt,
+                        "reponse": f_rep,
+                        "points": f_pts,
+                        "declenche_engins": f_engins
+                    })
+
+            st.markdown("---")
+
+            # 3. QUESTIONNAIRE GENERAL (POINTS PAR 0.5)
+            st.subheader("3. Questionnaire Général (Tronc Commun)")
             new_gen = []
-            
             gen_questions = q_data.get("general", [])
             nb_gen = st.number_input("Nombre de questions générales", min_value=1, max_value=30, value=len(gen_questions))
 
             for i in range(int(nb_gen)):
-                with st.expander(f"Question n°{i+1}", expanded=True):
+                with st.expander(f"📋 Question n°{i+1}", expanded=True):
                     q_curr = gen_questions[i] if i < len(gen_questions) else {}
                     
                     q_txt = st.text_input(f"Intitulé de la question {i+1}", value=q_curr.get("texte", ""), key=f"qtxt_{i}")
@@ -311,14 +337,14 @@ elif page == "⚙️ Espace Administrateur HSE":
                     if opts_list:
                         default_rep = q_curr.get("reponse", 0)
                         rep_idx = default_rep if default_rep < len(opts_list) else 0
-                        chosen_rep = st.selectbox("Sélectionner la bonne réponse attendue", opts_list, index=rep_idx, key=f"chrep_{i}")
+                        chosen_rep = st.selectbox("Bonne réponse attendue", opts_list, index=rep_idx, key=f"chrep_{i}")
                         rep_idx = opts_list.index(chosen_rep)
 
                     col_elim, col_pts = st.columns(2)
                     with col_elim:
                         is_elim = st.checkbox("🚨 Question Éliminatoire", value=q_curr.get("eliminatoire", False), key=f"elim_{i}")
                     with col_pts:
-                        pts = st.number_input("Points", min_value=1, value=q_curr.get("points", 1), key=f"pts_{i}")
+                        pts = st.number_input("Points attribués (pas de 0.5)", min_value=0.5, max_value=5.0, step=0.5, value=float(q_curr.get("points", 1.0)), key=f"pts_{i}")
 
                     new_gen.append({
                         "id": f"q_{i+1}",
@@ -329,40 +355,11 @@ elif page == "⚙️ Espace Administrateur HSE":
                         "eliminatoire": is_elim
                     })
 
-            # CONFIGURATION DES QUESTIONS FLASH
-            st.markdown("---")
-            st.markdown("### ⚡ Questions-Flash & Horodatages")
-            new_flash = []
-            flash_curr = q_data.get("flash", [])
-            nb_flash = st.number_input("Nombre de points d'arrêt flash", min_value=1, max_value=10, value=len(flash_curr))
-
-            for j in range(int(nb_flash)):
-                with st.expander(f"Point d'arrêt Flash n°{j+1}", expanded=True):
-                    f_item = flash_curr[j] if j < len(flash_curr) else {}
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        f_min = st.number_input("Minute", min_value=0, value=f_item.get("minutes", 0), key=f"fmin_{j}")
-                    with c2:
-                        f_sec = st.number_input("Seconde", min_value=0, max_value=59, value=f_item.get("secondes", 0), key=f"fsec_{j}")
-                    
-                    pool_init = " | ".join(f_item.get("questions_pool", []))
-                    f_pool_raw = st.text_input("Banque de questions (séparées par |)", value=pool_init, key=f"fpool_{j}")
-                    f_pool = [q.strip() for q in f_pool_raw.split("|") if q.strip()]
-                    
-                    f_engins = st.checkbox("Déclenche le module engins si réponse OUI", value=f_item.get("declenche_engins", False), key=f"feng_{j}")
-                    
-                    new_flash.append({
-                        "minutes": f_min,
-                        "secondes": f_sec,
-                        "questions_pool": f_pool,
-                        "declenche_engins": f_engins
-                    })
-
             if st.button("💾 Enregistrer la Configuration des Questionnaires"):
                 q_data["general"] = new_gen
                 q_data["flash"] = new_flash
                 sauvegarder_questions(q_data)
-                st.success("Toutes les questions et bonnes réponses ont été enregistrées avec succès !")
+                st.success("Questionnaires enregistrés avec succès !")
 
         # ONGLET REGISTRE DES RÉSULTATS
         with tab_results:
