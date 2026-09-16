@@ -1,19 +1,17 @@
 import os
 import json
-import random
-import string
 import base64
 from datetime import datetime
 import pandas as pd
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 import qrcode
 
 # =========================================================================
-# 1. CONFIGURATION INITIALE & SESSIONS
+# 1. CONFIGURATION INITIALE & SESSIONS CLOUD
 # =========================================================================
 
 st.set_page_config(
@@ -28,9 +26,12 @@ FORMS_DIR = "pdf_generated"
 
 os.makedirs(FORMS_DIR, exist_ok=True)
 
-# Initialisation du stockage en session
+# Initialisation des registres en session
 if "registre_global" not in st.session_state:
     st.session_state.registre_global = []
+
+if "video_url" not in st.session_state:
+    st.session_state.video_url = ""
 
 def charger_questions():
     if not os.path.exists(QUESTIONS_FILE):
@@ -51,16 +52,8 @@ def charger_questions():
                 {
                     "id": "q1", 
                     "texte": "En cas d'alarme incendie, quelle est la conduite à tenir ?", 
-                    "options": "Attendre des consignes, Rejoindre le point de rassemblement, Continuer son travail", 
+                    "options": ["Attendre des consignes", "Rejoindre le point de rassemblement", "Continuer son travail"], 
                     "reponse": 1, 
-                    "points": 1, 
-                    "eliminatoire": True
-                },
-                {
-                    "id": "q2", 
-                    "texte": "Quels sont les EPI de base obligatoires sur le site ?", 
-                    "options": "Chaussures de sécurité et gilet haute visibilité, Baskets et casque audio", 
-                    "reponse": 0, 
                     "points": 1, 
                     "eliminatoire": True
                 }
@@ -69,7 +62,7 @@ def charger_questions():
                 {
                     "id": "q_eng_1", 
                     "texte": "Quel document est obligatoire pour la conduite d'un engin sur site ?", 
-                    "options": "Permis B uniquement, Autorisation de conduite employeur + CACES", 
+                    "options": ["Permis B uniquement", "Autorisation de conduite employeur + CACES"], 
                     "reponse": 1, 
                     "points": 1, 
                     "eliminatoire": True
@@ -87,7 +80,7 @@ def sauvegarder_questions(data):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 # =========================================================================
-# 2. GÉNÉRATEUR DU PASS PDF OFFICIEL P&G
+# 2. GENERATION DU PASS PDF OFFICIEL P&G
 # =========================================================================
 
 def generer_pdf(d):
@@ -125,7 +118,7 @@ def generer_pdf(d):
     return filepath
 
 # =========================================================================
-# 3. INTERFACE UTILISATEUR & ADMIN
+# 3. INTERFACE UTILISATEUR & ESPACE ADMIN
 # =========================================================================
 
 st.sidebar.markdown("# **P&G Amiens**")
@@ -171,26 +164,36 @@ if page == "🏢 Portail Intervenant":
                 else:
                     st.error("Veuillez remplir vos informations nominatives.")
 
-    # ÉTAPE 2 : SENSABILISATION VIDÉO & QUESTIONS-FLASH
+    # ÉTAPE 2 : VISIONNAGE VIDÉO & QUESTIONS-FLASH
     elif st.session_state.step == 2:
         st.subheader("2. Sensibilisation aux Risques Site")
         
-        # Champ URL ou intégration vidéo direct cloud
-        st.info("📹 Regardez la vidéo d'accueil sécurité ci-dessous.")
-        st.video("https://www.w3schools.com/html/mov_bbb.mp4") # Remplaçable par ton lien vidéo MP4 hébergé
+        v_url = st.session_state.video_url
+        if v_url:
+            st.video(v_url)
+        else:
+            st.info("📹 Regardez la vidéo d'accueil sécurité ci-dessous.")
+            st.warning("⚠️ L'URL de la vidéo officielle entreprise est à configurer dans l'Espace Admin.")
 
         q_db = charger_questions()
+        st.markdown("---")
+        st.subheader("❓ Question-Flash Sécurité")
         
-        with st.expander("❓ Question-Flash : Conduite d'engins / nacelles sur site", expanded=True):
-            engins_opt = st.radio("Allez-vous conduire un engin de manutention, une nacelle ou une grue sur site ?", ["Non", "Oui"])
-            if engins_opt == "Oui":
-                st.session_state.reponses_flash_engins = True
+        flash_list = q_db.get("flash", [])
+        if len(flash_list) > 0:
+            for idx, f in enumerate(flash_list):
+                pool = f.get("questions_pool", [])
+                if pool:
+                    q_select = pool[0]
+                    engins_opt = st.radio(f"**Question-Flash ({f.get('minutes',0)}m{f.get('secondes',0)}s) : {q_select}**", ["Non", "Oui"], key=f"flash_{idx}")
+                    if engins_opt == "Oui" and f.get("declenche_engins"):
+                        st.session_state.reponses_flash_engins = True
 
-        if st.button("Passer au Questionnaire Final"):
+        if st.button("Accéder au Questionnaire Final"):
             st.session_state.step = 3
             st.rerun()
 
-    # ÉTAPE 3 : QUESTIONNAIRE & SIGNATURE TACTILE
+    # ÉTAPE 3 : QUESTIONNAIRES DE VALIDATION
     elif st.session_state.step == 3:
         st.subheader("3. Questionnaire de Validation")
         q_db = charger_questions()
@@ -198,7 +201,7 @@ if page == "🏢 Portail Intervenant":
         reponses_gen = {}
         st.markdown("### **Tronc Commun Général**")
         for idx, q in enumerate(q_db.get("general", [])):
-            opts = [o.strip() for o in q["options"].split(",")] if isinstance(q["options"], str) else q["options"]
+            opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
             reponses_gen[idx] = st.radio(f"**Q{idx+1}. {q['texte']}** {'*(Éliminatoire)*' if q.get('eliminatoire') else ''}", opts, key=f"gen_{idx}")
 
         reponses_eng = {}
@@ -206,12 +209,12 @@ if page == "🏢 Portail Intervenant":
             st.markdown("---")
             st.markdown("### **Module Spécifique Engins / Grues**")
             for idx, q in enumerate(q_db.get("engins", [])):
-                opts = [o.strip() for o in q["options"].split(",")] if isinstance(q["options"], str) else q["options"]
+                opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
                 reponses_eng[idx] = st.radio(f"**Q_Engin_{idx+1}. {q['texte']}**", opts, key=f"eng_{idx}")
 
         st.markdown("---")
         st.subheader("4. Attestation sur l'honneur & Signature")
-        st.caption("Je certifie sur l'honneur être la personne réalisant cet accueil sécurité et avoir suivi l'intégralité de la formation sans assistance.")
+        st.caption("Je certifie sur l'honneur être la personne réalisant cet accueil sécurité et avoir suivi la formation sans assistance.")
         
         canvas_result = st_canvas(stroke_width=2, stroke_color="#003B71", background_color="#FAFAFA", height=130, key="sig_canvas")
 
@@ -219,34 +222,53 @@ if page == "🏢 Portail Intervenant":
             score_gen = 0
             fautes_elim = 0
             for idx, q in enumerate(q_db.get("general", [])):
-                opts = [o.strip() for o in q["options"].split(",")] if isinstance(q["options"], str) else q["options"]
+                opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
                 rep_ind = opts.index(reponses_gen[idx]) if reponses_gen[idx] in opts else -1
                 if rep_ind == int(q["reponse"]):
                     score_gen += int(q.get("points", 1))
                 elif q.get("eliminatoire"):
                     fautes_elim += 1
 
+            ud = st.session_state.user_data
+            ud["temps_presence"] = 42
+            ud["score_general"] = score_gen
+            ud["timestamp"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
             if fautes_elim == 0 and score_gen >= 1:
-                ud = st.session_state.user_data
-                ud["temps_presence"] = 42 # Conforme
-                ud["score_general"] = score_gen
                 ud["statut_general"] = "VALIDE"
                 ud["statut_engins"] = "AUTORISÉE" if st.session_state.reponses_flash_engins else "NON_CONCERNE"
-                ud["timestamp"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                
-                # Inscription au registre
                 st.session_state.registre_global.append(ud)
-                pdf_path = generer_pdf(ud)
-                
-                st.balloons()
-                st.success("🟢 ACCUEIL SÉCURITÉ VALIDÉ !")
-                with open(pdf_path, "rb") as f:
-                    st.download_button("📄 Télécharger mon Pass Sécurité PDF", f, file_name=os.path.basename(pdf_path))
+                st.session_state.resultat_final = {"status": "SUCCESS", "data": ud, "pdf": generer_pdf(ud)}
             else:
-                st.error("🔴 ÉCHEC DE VALIDATION ACCUEIL SÉCURITÉ. Veuillez contacter le service HSE.")
+                ud["statut_general"] = "ECHEC"
+                ud["statut_engins"] = "NON_CONCERNE"
+                st.session_state.registre_global.append(ud)
+                st.session_state.resultat_final = {"status": "FAILURE", "data": ud}
+
+            st.session_state.step = 4
+            st.rerun()
+
+    # ÉTAPE 4 : ÉCRAN FINAL (DISPARITION DU QUESTIONNAIRE)
+    elif st.session_state.step == 4:
+        res = st.session_state.get("resultat_final", {})
+        if res.get("status") == "SUCCESS":
+            st.balloons()
+            st.success("🟢 ACCUEIL SÉCURITÉ VALIDÉ !")
+            st.write(f"Bravo **{res['data']['prenom']} {res['data']['nom']}**, votre accueil sécurité a été enregistré avec succès.")
+            
+            with open(res["pdf"], "rb") as f:
+                st.download_button("📄 Télécharger mon Attestation Sécurité PDF", f, file_name=os.path.basename(res["pdf"]))
+        else:
+            st.error("🔴 ÉCHEC DE VALIDATION DE L'ACCUEIL SÉCURITÉ")
+            st.write(f"Désolé **{res['data']['prenom']} {res['data']['nom']}**, votre résultat ne permet pas de valider l'accès au site.")
+            st.write("Veuillez contacter le service HSE P&G Amiens.")
+
+        if st.button("Terminer et revenir à l'accueil"):
+            st.session_state.step = 1
+            st.rerun()
 
 # -------------------------------------------------------------------------
-# B. ESPACE ADMINISTRATEUR HSE
+# B. ESPACE ADMINISTRATEUR HSE (STYLE MICROSOFT FORMS)
 # -------------------------------------------------------------------------
 elif page == "⚙️ Espace Administrateur HSE":
     st.title("🔒 Espace Administration HSE")
@@ -255,47 +277,101 @@ elif page == "⚙️ Espace Administrateur HSE":
     if pwd == ADMIN_PASSWORD:
         st.success("Accès Administrateur Déverrouillé.")
 
-        tab_params, tab_results = st.tabs(["⚙️ Paramètres de l'Accueil", "📊 Résultats des Candidats"])
+        tab_params, tab_results = st.tabs(["⚙️ Paramètres & Questionnaires", "📊 Enregistrement des Résultats"])
 
         with tab_params:
-            st.subheader("1. Fichier Vidéo ou Lien Streaming")
-            st.text_input("URL directe de la vidéo (.mp4 / Vimeo / Stream)", value="https://www.w3schools.com/html/mov_bbb.mp4")
+            st.subheader("1. Vidéo Cloud Entreprise (Stream / SharePoint / Drive)")
+            v_input = st.text_input("URL directe de la vidéo d'accueil sécurité (.mp4 / Stream)", value=st.session_state.video_url)
+            if st.button("Enregistrer l'URL de la vidéo"):
+                st.session_state.video_url = v_input
+                st.success("URL vidéo enregistrée !")
 
             st.markdown("---")
-            st.subheader("2. Gestionnaire de Questionnaires")
+            st.subheader("2. Editeur de Questionnaires (Style Microsoft Forms)")
             q_data = charger_questions()
 
-            col_a, col_b = st.columns(2)
-            with col_a:
-                up_txt = st.file_uploader("Importer un fichier texte (.txt) de questions", type=["txt"])
-                if up_txt:
-                    st.info("Fichier chargé ! Ajustez les cases dans le tableau ci-dessous.")
-            with col_b:
-                if st.button("🗑️ Vider le questionnaire pour tout saisir à la main"):
-                    q_data["general"] = []
-                    sauvegarder_questions(q_data)
-                    st.rerun()
+            # CONFIGURATION DES QUESTIONS GENERALES
+            st.markdown("### 📋 Questionnaire Général (Tronc Commun)")
+            new_gen = []
+            
+            gen_questions = q_data.get("general", [])
+            nb_gen = st.number_input("Nombre de questions générales", min_value=1, max_value=30, value=len(gen_questions))
 
-            st.markdown("#### **Édition du Questionnaire Général**")
-            df_gen = pd.DataFrame(q_data.get("general", []))
-            edited_df_gen = st.data_editor(df_gen, num_rows="dynamic", use_container_width=True, key="ed_gen")
+            for i in range(int(nb_gen)):
+                with st.expander(f"Question n°{i+1}", expanded=True):
+                    q_curr = gen_questions[i] if i < len(gen_questions) else {}
+                    
+                    q_txt = st.text_input(f"Intitulé de la question {i+1}", value=q_curr.get("texte", ""), key=f"qtxt_{i}")
+                    
+                    opts_init = ", ".join(q_curr.get("options", [])) if isinstance(q_curr.get("options"), list) else q_curr.get("options", "")
+                    opts_raw = st.text_input(f"Options de réponse (séparées par une virgule)", value=opts_init, key=f"optsraw_{i}")
+                    opts_list = [o.strip() for o in opts_raw.split(",") if o.strip()]
+                    
+                    rep_idx = 0
+                    if opts_list:
+                        default_rep = q_curr.get("reponse", 0)
+                        rep_idx = default_rep if default_rep < len(opts_list) else 0
+                        chosen_rep = st.selectbox("Sélectionner la bonne réponse attendue", opts_list, index=rep_idx, key=f"chrep_{i}")
+                        rep_idx = opts_list.index(chosen_rep)
 
-            st.markdown("#### **Édition du Module Spécifique Engins / Grues**")
-            df_eng = pd.DataFrame(q_data.get("engins", []))
-            edited_df_eng = st.data_editor(df_eng, num_rows="dynamic", use_container_width=True, key="ed_eng")
+                    col_elim, col_pts = st.columns(2)
+                    with col_elim:
+                        is_elim = st.checkbox("🚨 Question Éliminatoire", value=q_curr.get("eliminatoire", False), key=f"elim_{i}")
+                    with col_pts:
+                        pts = st.number_input("Points", min_value=1, value=q_curr.get("points", 1), key=f"pts_{i}")
 
-            if st.button("💾 Enregistrer Tous les Questionnaires"):
-                q_data["general"] = edited_df_gen.to_dict(orient="records")
-                q_data["engins"] = edited_df_eng.to_dict(orient="records")
+                    new_gen.append({
+                        "id": f"q_{i+1}",
+                        "texte": q_txt,
+                        "options": opts_list,
+                        "reponse": rep_idx,
+                        "points": pts,
+                        "eliminatoire": is_elim
+                    })
+
+            # CONFIGURATION DES QUESTIONS FLASH
+            st.markdown("---")
+            st.markdown("### ⚡ Questions-Flash & Horodatages")
+            new_flash = []
+            flash_curr = q_data.get("flash", [])
+            nb_flash = st.number_input("Nombre de points d'arrêt flash", min_value=1, max_value=10, value=len(flash_curr))
+
+            for j in range(int(nb_flash)):
+                with st.expander(f"Point d'arrêt Flash n°{j+1}", expanded=True):
+                    f_item = flash_curr[j] if j < len(flash_curr) else {}
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        f_min = st.number_input("Minute", min_value=0, value=f_item.get("minutes", 0), key=f"fmin_{j}")
+                    with c2:
+                        f_sec = st.number_input("Seconde", min_value=0, max_value=59, value=f_item.get("secondes", 0), key=f"fsec_{j}")
+                    
+                    pool_init = " | ".join(f_item.get("questions_pool", []))
+                    f_pool_raw = st.text_input("Banque de questions (séparées par |)", value=pool_init, key=f"fpool_{j}")
+                    f_pool = [q.strip() for q in f_pool_raw.split("|") if q.strip()]
+                    
+                    f_engins = st.checkbox("Déclenche le module engins si réponse OUI", value=f_item.get("declenche_engins", False), key=f"feng_{j}")
+                    
+                    new_flash.append({
+                        "minutes": f_min,
+                        "secondes": f_sec,
+                        "questions_pool": f_pool,
+                        "declenche_engins": f_engins
+                    })
+
+            if st.button("💾 Enregistrer la Configuration des Questionnaires"):
+                q_data["general"] = new_gen
+                q_data["flash"] = new_flash
                 sauvegarder_questions(q_data)
-                st.success("Configuration sauvegardée !")
+                st.success("Toutes les questions et bonnes réponses ont été enregistrées avec succès !")
 
+        # ONGLET REGISTRE DES RÉSULTATS
         with tab_results:
-            st.subheader("📊 Registre Historique des Tentatives")
+            st.subheader("📊 Registre Historique des Tentatives de Validation")
             if len(st.session_state.registre_global) > 0:
                 df_res = pd.DataFrame(st.session_state.registre_global)
                 st.dataframe(df_res, use_container_width=True)
+                
                 csv = df_res.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Exporter le registre (Excel / CSV)", csv, "registre_accueils_pg.csv", "text/csv")
+                st.download_button("📥 Exporter le registre sous Excel (CSV)", csv, "registre_accueils_pg.csv", "text/csv")
             else:
-                st.info("Aucune tentative enregistrée pour le moment.")
+                st.info("Aucun résultat enregistré pour le moment.")
