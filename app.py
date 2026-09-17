@@ -2,6 +2,7 @@ import os
 import json
 import time
 import random
+import string
 import requests
 from datetime import datetime
 import pandas as pd
@@ -14,7 +15,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 import qrcode
 
 # =========================================================================
-# 1. CONFIGURATION INITIALE & STYLES ADAPTATIFS
+# 1. CONFIGURATION & STYLES
 # =========================================================================
 
 st.set_page_config(
@@ -37,10 +38,9 @@ st.markdown("""
             border-left: 6px solid #003B71; padding: 18px 22px;
             border-radius: 6px; margin-top: 20px; margin-bottom: 20px;
         }
-        .flash-popup {
+        .flash-card {
             background-color: #FFF9E6; border: 3px solid #FFC107;
-            padding: 25px; border-radius: 10px; margin-top: 20px; margin-bottom: 25px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15); color: #222222;
+            padding: 25px; border-radius: 10px; margin: 20px 0; color: #222222;
         }
         .quiz-card {
             background-color: var(--secondary-background-color);
@@ -58,17 +58,18 @@ os.makedirs(FORMS_DIR, exist_ok=True)
 AIRTABLE_API_KEY = st.secrets.get("AIRTABLE_API_KEY", "")
 AIRTABLE_BASE_ID = st.secrets.get("AIRTABLE_BASE_ID", "")
 AIRTABLE_TABLE_NAME = st.secrets.get("AIRTABLE_TABLE_NAME", "RegistreAccueils")
-
 LOGO_PG_URL = "https://upload.wikimedia.org/wikipedia/commons/8/85/Procter_%26_Gamble_logo.svg"
 
 # =========================================================================
-# 2. GESTION BASE DE DONNÉES & AIRTABLE
+# 2. PERSISTANCE CONFIGURATION & AIRTABLE
 # =========================================================================
 
-def charger_questions():
+def charger_config():
     if not os.path.exists(QUESTIONS_FILE):
-        def_q = {
+        cfg_def = {
             "video_url": "",
+            "sessions_presentiel": {},
+            "rattrapage_codes": {},
             "flash": [
                 {
                     "minutes": 1, "secondes": 30,
@@ -84,48 +85,36 @@ def charger_questions():
             "engins": []
         }
         with open(QUESTIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(def_q, f, ensure_ascii=False, indent=4)
-        return def_q
+            json.dump(cfg_def, f, ensure_ascii=False, indent=4)
+        return cfg_def
     with open(QUESTIONS_FILE, 'r', encoding='utf-8') as f:
         data = json.load(f)
-        if "video_url" not in data:
-            data["video_url"] = ""
+        if "sessions_presentiel" not in data: data["sessions_presentiel"] = {}
+        if "rattrapage_codes" not in data: data["rattrapage_codes"] = {}
         return data
 
-def sauvegarder_questions(data):
+def sauvegarder_config(data):
     with open(QUESTIONS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-if "video_url" not in st.session_state:
-    config_init = charger_questions()
-    st.session_state.video_url = config_init.get("video_url", "")
-
-if "video_started" not in st.session_state: st.session_state.video_started = False
-if "video_ended" not in st.session_state: st.session_state.video_ended = False
-if "reponses_flash_engins" not in st.session_state: st.session_state.reponses_flash_engins = False
-if "score_flash_correct" not in st.session_state: st.session_state.score_flash_correct = 0
-if "total_flash_eval" not in st.session_state: st.session_state.total_flash_eval = 0
-if "flash_repondues" not in st.session_state: st.session_state.flash_repondues = set()
-if "questions_flash_tirees" not in st.session_state: st.session_state.questions_flash_tirees = {}
-if "temp_confirm_flash" not in st.session_state: st.session_state.temp_confirm_flash = False
-
-def enregistrer_airtable(donnees):
+def enregistrer_airtable(d):
     if not AIRTABLE_API_KEY or not AIRTABLE_BASE_ID: return False
     url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
     headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "records": [{
             "fields": {
-                "Nom": donnees.get("nom", ""),
-                "Prenom": donnees.get("prenom", ""),
-                "Entreprise": donnees.get("entreprise", ""),
-                "EmailResponsable": donnees.get("email", ""),
-                "Mode": donnees.get("mode", ""),
-                "TempsPresenceMin": donnees.get("temps_presence", 0),
-                "ScoreGeneral": float(donnees.get("score_general", 0)),
-                "StatutGeneral": donnees.get("statut_general", ""),
-                "StatutEngins": donnees.get("statut_engins", "NON_CONCERNE"),
-                "DatePassation": donnees.get("timestamp", "")
+                "Nom": d.get("nom", ""),
+                "Prenom": d.get("prenom", ""),
+                "Entreprise": d.get("entreprise", ""),
+                "EmailResponsable": d.get("email", ""),
+                "Mode": d.get("mode", ""),
+                "TempsPresenceMin": d.get("temps_presence", 0),
+                "ScoreGeneral": float(d.get("score_general", 0)),
+                "StatutGeneral": d.get("statut_general", ""),
+                "MotifEchecInterne": d.get("motif_interne", "AUCUN"),
+                "StatutEngins": d.get("statut_engins", "NON_CONCERNE"),
+                "DatePassation": d.get("timestamp", "")
             }
         }]
     }
@@ -145,8 +134,19 @@ def lire_airtable():
         return []
     except Exception: return []
 
+# INITIALISATION DES ÉTATS DE SESSION
+if "step" not in st.session_state: st.session_state.step = 1
+if "video_started" not in st.session_state: st.session_state.video_started = False
+if "video_ended" not in st.session_state: st.session_state.video_ended = False
+if "flash_repondues" not in st.session_state: st.session_state.flash_repondues = set()
+if "questions_flash_tirees" not in st.session_state: st.session_state.questions_flash_tirees = {}
+if "reponses_flash_engins" not in st.session_state: st.session_state.reponses_flash_engins = False
+if "score_flash_correct" not in st.session_state: st.session_state.score_flash_correct = 0
+if "total_flash_eval" not in st.session_state: st.session_state.total_flash_eval = 0
+if "flash_msg_temp" not in st.session_state: st.session_state.flash_msg_temp = False
+
 # =========================================================================
-# 3. GÉNÉRATION DU PASS SÉCURITÉ PDF
+# 3. GENERATION PDF
 # =========================================================================
 
 def generer_pdf(d):
@@ -240,12 +240,15 @@ page = st.sidebar.radio("Navigation", ["🏢 Portail Intervenant", "⚙️ Espac
 
 if page == "🏢 Portail Intervenant":
     st.markdown("""<div class="main-header"><h1>🛡️ Accueil Sécurité Site — Procter & Gamble Amiens</h1></div>""", unsafe_allow_html=True)
-    if "step" not in st.session_state: st.session_state.step = 1
+    cfg = charger_config()
 
-    # ÉTAPE 1 : IDENTIFICATION
+    # ÉTAPE 1 : IDENTIFICATION & RACCORDEMENT SESSION
     if st.session_state.step == 1:
         st.markdown('<div class="section-card"><h2>👤 Étape 1 : Identification de l\'Intervenant</h2></div>', unsafe_allow_html=True)
-        with st.form("id_form"):
+        
+        mode_passation = st.radio("Sélectionnez votre mode de formation :", ["DISTANCIEL (Autonome)", "SALLE / PRÉSENTIEL (Code de session)"])
+        
+        with st.form("form_id"):
             col1, col2 = st.columns(2)
             with col1:
                 nom = st.text_input("Nom").upper()
@@ -254,31 +257,42 @@ if page == "🏢 Portail Intervenant":
                 entreprise = st.text_input("Entreprise Extérieure")
                 email = st.text_input("E-mail du Responsable")
 
-            mode = st.selectbox("Mode de formation", ["DISTANCIEL (Autonome)", "SALLE (Collectif)"])
+            code_session_input = ""
+            if "PRÉSENTIEL" in mode_passation:
+                code_session_input = st.text_input("Code de session fourni par l'animateur (6 chiffres)", max_chars=6)
+
             if st.form_submit_button("Valider mes informations ➔"):
                 if nom and prenom and entreprise:
-                    st.session_state.user_data = {"nom": nom, "prenom": prenom, "entreprise": entreprise, "email": email, "mode": mode}
+                    if "PRÉSENTIEL" in mode_passation:
+                        sessions_vali = cfg.get("sessions_presentiel", {})
+                        if code_session_input not in sessions_vali:
+                            st.error("Code de session invalide ou expiré.")
+                            st.stop()
+                    
+                    st.session_state.user_data = {
+                        "nom": nom, "prenom": prenom, "entreprise": entreprise, 
+                        "email": email, "mode": mode_passation, "code_session": code_session_input
+                    }
                     st.session_state.step = 2
                     st.rerun()
-                else: st.error("Veuillez remplir vos informations nominatives.")
+                else:
+                    st.error("Veuillez renseigner toutes vos informations nominatives.")
 
-    # ÉTAPE 2 : VIDÉO, QUESTIONS-FLASH ET ACCÈS QUESTIONNAIRE
+    # ÉTAPE 2 : VISIONNAGE VIDÉO STRICT & QUESTIONS-FLASH
     elif st.session_state.step == 2:
         st.markdown('<div class="section-card"><h2>🎥 Étape 2 : Sensibilisation Vidéo & Questions-Flash</h2></div>', unsafe_allow_html=True)
 
-        # 1. BOUTON INITIAL DE LANCEMENT (Disparaît dès qu'on clique dessus)
         if not st.session_state.video_started:
-            st.info("Cliquez sur le bouton ci-dessous pour démarrer la séance. Le chronomètre officiel sera activé.")
+            st.info("Cliquez ci-dessous pour démarrer le visionnage. Le chrono de la session s'activera.")
             if st.button("▶️ LANCER LA VIDÉO D'ACCUEIL SÉCURITÉ", type="primary"):
                 st.session_state.video_started = True
                 st.session_state.start_time = datetime.now()
                 st.rerun()
+
         else:
-            q_db = charger_questions()
-            flash_list = q_db.get("flash", [])
+            flash_list = cfg.get("flash", [])
             elapsed_sec = int((datetime.now() - st.session_state.start_time).total_seconds())
 
-            # Détection de la question-flash active (non encore répondue)
             flash_active_idx = None
             for idx, f in enumerate(flash_list):
                 target_sec = (f.get("minutes", 0) * 60) + f.get("secondes", 0)
@@ -286,146 +300,130 @@ if page == "🏢 Portail Intervenant":
                     flash_active_idx = idx
                     break
 
-            # 2. MESSAGE TEMPORAIRE DE CONFIRMATION (Affiché pendant 1 seconde puis s'efface)
-            if st.session_state.temp_confirm_flash:
+            if st.session_state.flash_msg_temp:
                 st.success("✅ **Réponse enregistrée.** Reprise de la vidéo...")
                 time.sleep(1)
-                st.session_state.temp_confirm_flash = False
+                st.session_state.flash_msg_temp = False
                 st.rerun()
 
-            # 3. QUESTION-FLASH ACTIVE (DISPARAÎT DÈS QUE RÉPONDU)
             elif flash_active_idx is not None:
-                st.warning("⏸️ VIDÉO EN PAUSE — Question-Flash (Délai : 30 secondes)")
+                st.warning("⏸️ VIDÉO EN PAUSE — Question-Flash de contrôle (Délai : 30 secondes)")
                 f_active = flash_list[flash_active_idx]
 
-                if f"flash_start_{flash_active_idx}" not in st.session_state:
-                    st.session_state[f"flash_start_{flash_active_idx}"] = datetime.now()
+                if f"flash_timer_{flash_active_idx}" not in st.session_state:
+                    st.session_state[f"flash_timer_{flash_active_idx}"] = datetime.now()
 
-                time_spent_flash = int((datetime.now() - st.session_state[f"flash_start_{flash_active_idx}"]).total_seconds())
-                time_left = max(0, 30 - time_spent_flash)
+                time_spent = int((datetime.now() - st.session_state[f"flash_timer_{flash_active_idx}"]).total_seconds())
+                time_left = max(0, 30 - time_spent)
 
                 st.progress(time_left / 30)
-                st.caption(f"⏳ Temps restant pour répondre : **{time_left} seconde(s)**")
+                st.caption(f"⏳ Temps restant : **{time_left} seconde(s)**")
 
                 if flash_active_idx not in st.session_state.questions_flash_tirees:
                     banque = f_active.get("banque_questions", [])
-                    st.session_state.questions_flash_tirees[flash_active_idx] = random.choice(banque) if banque else {"texte": "Question indisponible", "reponse": "Vrai"}
+                    st.session_state.questions_flash_tirees[flash_active_idx] = random.choice(banque) if banque else {"texte": "Question non disponible", "reponse": "Vrai"}
 
                 q_selected = st.session_state.questions_flash_tirees[flash_active_idx]
 
                 if time_left > 0:
                     st.markdown(f'''
-                        <div class="flash-popup">
+                        <div class="flash-card">
                             <h3>⚡ Question-Flash ({f_active.get("minutes",0)}m{f_active.get("secondes",0)}s)</h3>
-                            <p style="font-size:1.2rem; font-weight:600;">{q_selected["texte"]}</p>
+                            <p style="font-size:1.15rem; font-weight:600;">{q_selected["texte"]}</p>
                         </div>
                     ''', unsafe_allow_html=True)
 
-                    ans_f = st.radio("Votre réponse :", ["Vrai", "Faux"], key=f"popup_ans_{flash_active_idx}")
+                    ans = st.radio("Votre réponse :", ["Vrai", "Faux"], key=f"rad_flash_{flash_active_idx}")
 
-                    if st.button("Valider ma réponse ➔"):
-                        if ans_f == "Vrai" and f_active.get("declenche_engins"):
+                    if st.button("Valider la réponse ➔"):
+                        if ans == "Vrai" and f_active.get("declenche_engins"):
                             st.session_state.reponses_flash_engins = True
 
                         if f_active.get("mode_reponse") == "Avec réponse attendue (Évalué)":
                             st.session_state.total_flash_eval += 1
-                            if ans_f == q_selected.get("reponse"):
+                            if ans == q_selected.get("reponse"):
                                 st.session_state.score_flash_correct += 1
 
-                        # On marque immédiatement la question comme répondue
                         st.session_state.flash_repondues.add(flash_active_idx)
-                        st.session_state.temp_confirm_flash = True
+                        st.session_state.flash_msg_temp = True
                         st.rerun()
                 else:
                     st.error("⌛ Temps écoulé (30s dépassées) pour cette question-flash !")
                     st.session_state.flash_repondues.add(flash_active_idx)
-                    st.session_state.temp_confirm_flash = True
+                    st.session_state.flash_msg_temp = True
                     time.sleep(1)
                     st.rerun()
 
-            # 4. FIN DE VIDÉO : BILAN ET BOUTON D'ACCÈS OBLIGATOIRE AU QUESTIONNAIRE
-            elif st.session_state.get("video_ended", False):
+            elif st.session_state.video_ended:
                 st.markdown("---")
                 if st.session_state.total_flash_eval > 0 and st.session_state.score_flash_correct == st.session_state.total_flash_eval:
-                    st.success("🌟 **Super, vous avez été très attentif pendant la vidéo !** Passons au questionnaire de validation.")
+                    st.success("🌟 **Super, vous avez été très attentif pendant la vidéo !**")
                 else:
-                    st.info("💡 **Veuillez rester bien attentif et concentré** pour répondre au questionnaire ci-dessous.")
+                    st.info("💡 **Veuillez rester bien attentif et concentré pour la suite.**")
 
                 if st.button("Passer au questionnaire de validation des connaissances ➔", type="primary", use_container_width=True):
                     st.session_state.step = 3
                     st.rerun()
 
-            # 5. LECTEUR VIDÉO BRIDÉ (SANS BARRE DE RECHERCHE, DÉTECTION FIN DE LECTURE)
             else:
-                v_url = st.session_state.video_url or q_db.get("video_url", "")
+                v_url = cfg.get("video_url", "")
                 if v_url:
                     if "iframe" in v_url.lower() or "embed" in v_url.lower():
                         st.components.v1.html(v_url, height=450)
-                        if st.button("J'ai terminé de visionner la vidéo ➔", type="primary"):
+                        if st.button("J'ai terminé le visionnage ➔", type="primary"):
                             st.session_state.video_ended = True
                             st.rerun()
                     else:
-                        video_locked_html = f"""
+                        v_code = f"""
                         <div style="position: relative; width: 100%; max-width: 800px; margin: auto; user-select: none;">
-                            <video id="pgLockedVideo" width="100%" autoplay style="border-radius: 8px; pointer-events: none;">
+                            <video id="pgVideo" width="100%" autoplay style="border-radius: 8px; pointer-events: none;">
                                 <source src="{v_url}" type="video/mp4">
-                                Lecteur non supporté.
                             </video>
                             <div style="position: absolute; top:0; left:0; width:100%; height:100%; z-index: 999; background: transparent;"></div>
                         </div>
                         <script>
-                            const vid = document.getElementById('pgLockedVideo');
-                            vid.play();
-
-                            // Bloque la vitesse à 1.0x en permanence
-                            setInterval(() => {{ if (vid.playbackRate !== 1.0) vid.playbackRate = 1.0; }}, 200);
-
-                            // Interdit le menu contextuel clic-droit
-                            document.addEventListener('contextmenu', event => event.preventDefault());
-
-                            // Détecte la fin automatique de la vidéo
-                            vid.onended = function() {{
-                                window.parent.postMessage({{type: 'streamlit:setComponentValue', value: true}}, '*');
-                            }};
+                            const v = document.getElementById('pgVideo');
+                            v.play();
+                            setInterval(() => {{ if (v.playbackRate !== 1.0) v.playbackRate = 1.0; }}, 200);
+                            document.addEventListener('contextmenu', e => e.preventDefault());
                         </script>
                         """
-                        st.components.v1.html(video_locked_html, height=460)
+                        st.components.v1.html(v_code, height=460)
 
-                        col_f1, col_f2 = st.columns([3, 1])
-                        with col_f2:
+                        col_a, col_b = st.columns([3, 1])
+                        with col_b:
                             if st.button("J'ai terminé le visionnage ➔"):
                                 st.session_state.video_ended = True
                                 st.rerun()
                 else:
-                    st.info("📹 Aucune vidéo enregistrée. Veuillez configurer l'URL dans l'Espace Administrateur.")
+                    st.warning("⚠️ Aucune URL vidéo configurée. Veuillez l'ajouter dans l'Espace Administrateur.")
 
                 time.sleep(3)
                 st.rerun()
 
-    # ÉTAPE 3 : QUESTIONNAIRE GÉNÉRAL & ENGINS
+    # ÉTAPE 3 : QUESTIONNAIRE DE VALIDATION
     elif st.session_state.step == 3:
         st.markdown('<div class="section-card"><h2>📝 Étape 3 : Questionnaire de Validation</h2></div>', unsafe_allow_html=True)
-
-        q_db = charger_questions()
+        
         reponses_gen = {}
         st.markdown("### 📋 **Tronc Commun Général**")
-        for idx, q in enumerate(q_db.get("general", [])):
+        for idx, q in enumerate(cfg.get("general", [])):
             st.markdown('<div class="quiz-card">', unsafe_allow_html=True)
             opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
             reponses_gen[idx] = st.radio(
                 f"**Q{idx+1}. {q['texte']}** *(Barème : {q.get('points', 1.0)} pt)* {'*(🚨 Éliminatoire)*' if q.get('eliminatoire') else ''}", 
-                opts, key=f"gen_{idx}"
+                opts, key=f"qgen_{idx}"
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
         reponses_eng = {}
-        if st.session_state.reponses_flash_engins and len(q_db.get("engins", [])) > 0:
+        if st.session_state.reponses_flash_engins and len(cfg.get("engins", [])) > 0:
             st.markdown("---")
             st.markdown("### 🚜 **Module Spécifique Engins / Grues**")
-            for idx, q in enumerate(q_db.get("engins", [])):
+            for idx, q in enumerate(cfg.get("engins", [])):
                 st.markdown('<div class="quiz-card">', unsafe_allow_html=True)
                 opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
-                reponses_eng[idx] = st.radio(f"**Q_Engin_{idx+1}. {q['texte']}**", opts, key=f"eng_{idx}")
+                reponses_eng[idx] = st.radio(f"**Q_Engin_{idx+1}. {q['texte']}**", opts, key=f"qeng_{idx}")
                 st.markdown('</div>', unsafe_allow_html=True)
 
         if st.button("Passer à l'Émargement & Signature ➔"):
@@ -433,27 +431,27 @@ if page == "🏢 Portail Intervenant":
             st.session_state.step = 4
             st.rerun()
 
-    # ÉTAPE 4 : SIGNATURE & SOUMISSION
+    # ÉTAPE 4 : SIGNATURE, DÉTERMINATION SECRÈTE DU MOTIF & DÉLIVRANCE
     elif st.session_state.step == 4:
         st.markdown('<div class="section-card"><h2>✍️ Étape 4 : Attestation sur l\'honneur & Validation</h2></div>', unsafe_allow_html=True)
-        
+
         if "resultat_final" not in st.session_state:
             st.caption("Je certifie sur l'honneur être la personne réalisant cet accueil sécurité et avoir suivi la formation sans assistance.")
-            canvas_result = st_canvas(stroke_width=2, stroke_color="#003B71", background_color="#FAFAFA", height=130, key="sig_canvas")
+            st_canvas(stroke_width=2, stroke_color="#003B71", background_color="#FAFAFA", height=130, key="canvas_sig")
 
             if st.button("💾 Soumettre et Valider mon Accueil Sécurité"):
-                q_db = charger_questions()
                 score_gen = 0.0
                 fautes_elim = 0
-                
-                start_time = st.session_state.get("start_time", datetime.now())
-                temps_presence_min = int((datetime.now() - start_time).total_seconds() / 60)
 
+                start_t = st.session_state.get("start_time", datetime.now())
+                temps_presence_min = int((datetime.now() - start_t).total_seconds() / 60)
+
+                # RÈGLES DE DURÉE STRICTES
                 min_requis = 50 if st.session_state.reponses_flash_engins else 40
-                max_autorise = 60
+                max_autorise = 70 if st.session_state.reponses_flash_engins else 60
 
                 reponses_gen = st.session_state.get("reponses_gen_val", {})
-                for idx, q in enumerate(q_db.get("general", [])):
+                for idx, q in enumerate(cfg.get("general", [])):
                     opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
                     rep_ind = opts.index(reponses_gen[idx]) if idx in reponses_gen and reponses_gen[idx] in opts else -1
                     if rep_ind == int(q["reponse"]): score_gen += float(q.get("points", 1.0))
@@ -464,22 +462,32 @@ if page == "🏢 Portail Intervenant":
                 ud["score_general"] = score_gen
                 ud["timestamp"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-                total_flash_config = len(q_db.get("flash", []))
-                flash_repondues_count = len(st.session_state.flash_repondues)
+                tot_flash_cfg = len(cfg.get("flash", []))
+                tot_flash_ok = len(st.session_state.flash_repondues)
 
-                motif_echec = ""
-                if flash_repondues_count < total_flash_config:
-                    motif_echec = f"Saut de vidéo détecté : toutes les questions-flash n'ont pas été répondues ({flash_repondues_count}/{total_flash_config})."
+                # DÉTERMINATION MOTIF
+                motif_interne = ""
+                msg_candidat = ""
+
+                if tot_flash_ok < tot_flash_cfg:
+                    motif_interne = f"ECHEC_QUESTIONS_FLASH_MANQUANTES ({tot_flash_ok}/{tot_flash_cfg})"
+                    msg_candidat = "Session invalide : Le visionnage complet de la vidéo de sensibilisation n'a pas été validé."
                 elif temps_presence_min < min_requis:
-                    motif_echec = f"Durée de session insuffisante ({temps_presence_min} min vs {min_requis} min minimum requis)."
+                    motif_interne = "ECHEC_TEMPS_INSUFFISANT"
+                    msg_candidat = "Votre session n'a pas été validée par le système. Veuillez contacter le service HSE."
                 elif temps_presence_min > max_autorise:
-                    motif_echec = f"Dépassement du temps plafond autorisé ({temps_presence_min} min vs {max_autorise} min max)."
+                    motif_interne = "ECHEC_TEMPS_DEPASSE"
+                    msg_candidat = "Votre session n'a pas été validée par le système. Veuillez contacter le service HSE."
                 elif fautes_elim > 0:
-                    motif_echec = "Échec sur au moins une question éliminatoire de sécurité."
+                    motif_interne = f"ECHEC_QUESTION_ELIMINATOIRE ({fautes_elim} fautes)"
+                    msg_candidat = "Échec : Au moins une erreur commise sur une règle éliminatoire de sécurité."
                 elif score_gen < 1.0:
-                    motif_echec = "Score global insuffisant."
+                    motif_interne = "ECHEC_SCORE_INSUFFISANT"
+                    msg_candidat = "Score insuffisant au questionnaire de sécurité."
 
-                if not motif_echec:
+                ud["motif_interne"] = motif_interne if motif_interne else "AUCUN"
+
+                if not motif_interne:
                     ud["statut_general"] = "VALIDE"
                     ud["statut_engins"] = "AUTORISÉE" if st.session_state.reponses_flash_engins else "NON_CONCERNE"
                     enregistrer_airtable(ud)
@@ -488,23 +496,43 @@ if page == "🏢 Portail Intervenant":
                     ud["statut_general"] = "ECHEC"
                     ud["statut_engins"] = "NON_CONCERNE"
                     enregistrer_airtable(ud)
-                    st.session_state.resultat_final = {"status": "FAILURE", "data": ud, "motif": motif_echec}
+                    st.session_state.resultat_final = {"status": "FAILURE", "data": ud, "msg": msg_candidat}
 
                 st.rerun()
+
         else:
             res = st.session_state.resultat_final
             if res.get("status") == "SUCCESS":
                 st.balloons()
                 st.success("🟢 ACCUEIL SÉCURITÉ VALIDÉ !")
-                st.write(f"Bravo **{res['data']['prenom']} {res['data']['nom']}**, votre score final est de **{res['data']['score_general']} pt(s)** pour une durée de **{res['data']['temps_presence']} min**.")
+                st.write(f"Bravo **{res['data']['prenom']} {res['data']['nom']}**, votre accueil sécurité est validé.")
                 with open(res["pdf"], "rb") as f:
                     st.download_button("📄 Télécharger mon Attestation Sécurité PDF", f, file_name=os.path.basename(res["pdf"]))
             else:
-                st.error("🔴 ÉCHEC DE VALIDATION DE L'ACCUEIL SÉCURITÉ")
-                st.write(f"**Motif d'invalidation :** {res.get('motif', 'Résultat non conforme.')}")
-                st.write("Veuillez vous adresser au service HSE du site P&G Amiens.")
+                st.error("🔴 ACCUEIL SÉCURITÉ NON VALIDÉ")
+                st.write(f"**Message :** {res.get('msg')}")
+                
+                st.markdown("---")
+                st.subheader("🔑 Rattrapage par Code Unique")
+                st.caption("Si vous disposez d'un code de rattrapage unique fourni par l'équipe HSE, vous pouvez le saisir ci-dessous pour repasser directement le questionnaire général.")
+                
+                code_ratt_input = st.text_input("Code de rattrapage (8 caractères)", max_chars=8).strip().upper()
+                if st.button("Déverrouiller le rattrapage ➔"):
+                    codes_db = cfg.get("rattrapage_codes", {})
+                    if code_ratt_input in codes_db and not codes_db[code_ratt_input].get("utilise", False):
+                        codes_db[code_ratt_input]["utilise"] = True
+                        cfg["rattrapage_codes"] = codes_db
+                        sauvegarder_config(cfg)
 
-            if st.button("Terminer et recommencer"):
+                        del st.session_state["resultat_final"]
+                        st.session_state.step = 3
+                        st.success("Code valide ! Redirection vers le questionnaire...")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("Code de rattrapage invalide ou déjà utilisé.")
+
+            if st.button("Terminer la session"):
                 del st.session_state["resultat_final"]
                 st.session_state.step = 1
                 st.session_state.video_started = False
@@ -517,130 +545,151 @@ if page == "🏢 Portail Intervenant":
 elif page == "⚙️ Espace Administrateur HSE":
     st.markdown("""<div class="main-header"><h1>🔒 Panneau d'Administration HSE — P&G Amiens</h1></div>""", unsafe_allow_html=True)
     pwd = st.sidebar.text_input("Code secret Administrateur", type="password")
-    
+
     if pwd == ADMIN_PASSWORD:
-        st.sidebar.success("Accès Administrateur Autorisé")
-        admin_section = st.sidebar.radio("📌 Section Admin :", ["⚙️ 1. Vidéo Cloud", "⚡ 2. Banques Questions-Flash", "📋 3. Questionnaire Général", "🚜 4. Questionnaire Engins", "📊 5. Registre Airtable"])
-        q_data = charger_questions()
+        st.sidebar.success("Accès Autorisé")
+        admin_section = st.sidebar.radio("📌 Section :", [
+            "⚙️ 1. Vidéo Cloud & Sessions Salle", 
+            "🔑 2. Générateur Codes Rattrapage",
+            "⚡ 3. Questions-Flash", 
+            "📋 4. Questionnaire Général", 
+            "🚜 5. Questionnaire Engins", 
+            "📊 6. Registre Airtable"
+        ])
+        cfg_admin = charger_config()
 
         if "⚙️ 1." in admin_section:
-            st.subheader("1. Vidéo Cloud Entreprise (Stream / SharePoint / Direct MP4)")
-            url_enregistree = q_data.get("video_url", "")
-            v_input = st.text_area("Lien Web Direct (.mp4) OU Code d'intégration Embed (<iframe>)", value=url_enregistree, height=100)
-            
-            if st.button("💾 Enregistrer Définitivement l'URL de la Vidéo"):
-                q_data["video_url"] = v_input
-                sauvegarder_questions(q_data)
-                st.session_state.video_url = v_input
-                st.success("L'URL de la vidéo a été sauvegardée définitivement !")
+            st.subheader("1. Vidéo Cloud & Sessions Présentielles / Salle")
+            v_input = st.text_area("URL Directe MP4 ou Code Embed <iframe>", value=cfg_admin.get("video_url", ""), height=100)
+            if st.button("💾 Enregistrer l'URL Vidéo"):
+                cfg_admin["video_url"] = v_input
+                sauvegarder_config(cfg_admin)
+                st.success("URL vidéo sauvegardée !")
 
-        elif "⚡ 2." in admin_section:
-            st.subheader("2. Banques de Questions-Flash Aléatoires")
+            st.markdown("---")
+            st.subheader("🎟️ Génération de Code de Session Salle (Kahoot)")
+            c_mail = st.text_input("Adresse E-mail pour recevoir le code de session", value="admin.hse@pg.com")
+            if st.button("Créer une nouvelle session Salle ➔"):
+                new_code = ''.join(random.choices(string.digits, k=6))
+                cfg_admin["sessions_presentiel"][new_code] = {"created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "email": c_mail}
+                sauvegarder_config(cfg_admin)
+                st.success(f"Session créée ! Code de session : **{new_code}** (Envoyé à {c_mail})")
+
+        elif "🔑 2." in admin_section:
+            st.subheader("🔑 Génération de Codes de Rattrapage Uniques")
+            nom_c = st.text_input("Nom & Prénom du candidat éligible").upper()
+            if st.button("Générer un Code Unique de Rattrapage"):
+                if nom_c:
+                    r_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+                    cfg_admin["rattrapage_codes"][r_code] = {"candidat": nom_c, "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "utilise": False}
+                    sauvegarder_config(cfg_admin)
+                    st.success(f"Code généré pour {nom_c} : **{r_code}** (Valable 1 seule fois)")
+                else:
+                    st.warning("Veuillez saisir le nom du candidat.")
+
+            st.markdown("### Codes actifs en base :")
+            st.json(cfg_admin.get("rattrapage_codes", {}))
+
+        elif "⚡ 3." in admin_section:
+            st.subheader("3. Banques de Questions-Flash")
             new_flash = []
-            flash_curr = q_data.get("flash", [])
-            nb_flash = st.number_input("Nombre de points d'arrêt flash", min_value=1, max_value=15, value=len(flash_curr))
+            flash_curr = cfg_admin.get("flash", [])
+            nb_f = st.number_input("Nombre de points d'arrêt flash", min_value=1, max_value=15, value=len(flash_curr))
 
-            for j in range(int(nb_flash)):
+            for j in range(int(nb_f)):
                 with st.expander(f"⚡ Point d'arrêt n°{j+1}", expanded=True):
                     f_item = flash_curr[j] if j < len(flash_curr) else {}
-                    
                     c1, c2 = st.columns(2)
                     with c1: f_min = st.number_input("Minute", min_value=0, value=f_item.get("minutes", 0), key=f"fmin_{j}")
                     with c2: f_sec = st.number_input("Seconde", min_value=0, max_value=59, value=f_item.get("secondes", 0), key=f"fsec_{j}")
-                    
+
                     mode_f = st.selectbox("Mode d'évaluation", ["Pas de bonne réponse (Orientation / Info)", "Avec réponse attendue (Évalué)"], index=0 if "Pas de bonne" in f_item.get("mode_reponse", "") else 1, key=f"fmode_{j}")
 
-                    st.markdown("**Banque de questions pour ce timing (1 question par ligne avec réponse séparée par `|`) :**")
-                    st.caption("Format : Intitulé de la question | Vrai (ou Faux)")
-                    
                     banque_init = f_item.get("banque_questions", [])
                     banque_str_list = [f"{q.get('texte')} | {q.get('reponse', 'Vrai')}" for q in banque_init]
-                    banque_raw = st.text_area("Questions de la banque :", value="\n".join(banque_str_list), key=f"fbanque_{j}")
-                    
-                    parsed_banque = []
+                    banque_raw = st.text_area("Banque (Question | Vrai ou Faux)", value="\n".join(banque_str_list), key=f"fbanque_{j}")
+
+                    parsed_b = []
                     for line in banque_raw.split("\n"):
                         if "|" in line:
-                            parts = line.split("|")
-                            parsed_banque.append({"texte": parts[0].strip(), "reponse": parts[1].strip()})
+                            p = line.split("|")
+                            parsed_b.append({"texte": p[0].strip(), "reponse": p[1].strip()})
                         elif line.strip():
-                            parsed_banque.append({"texte": line.strip(), "reponse": "Vrai"})
+                            parsed_b.append({"texte": line.strip(), "reponse": "Vrai"})
 
-                    f_engins = st.checkbox("Déclenche le module engins si réponse VRAI", value=f_item.get("declenche_engins", False), key=f"feng_{j}")
+                    f_eng = st.checkbox("Déclenche le module engins si réponse VRAI", value=f_item.get("declenche_engins", False), key=f"feng_{j}")
+                    new_flash.append({"minutes": f_min, "secondes": f_sec, "banque_questions": parsed_b, "mode_reponse": mode_f, "declenche_engins": f_eng})
 
-                    new_flash.append({"minutes": f_min, "secondes": f_sec, "banque_questions": parsed_banque, "mode_reponse": mode_f, "declenche_engins": f_engins})
+            if st.button("💾 Enregistrer les Questions-Flash"):
+                cfg_admin["flash"] = new_flash
+                sauvegarder_config(cfg_admin)
+                st.success("Banques de questions-flash sauvegardées !")
 
-            if st.button("💾 Enregistrer la Banque de Questions-Flash"):
-                q_data["flash"] = new_flash
-                sauvegarder_questions(q_data)
-                st.success("Banques de questions-flash enregistrées avec succès !")
-
-        elif "📋 3." in admin_section:
-            st.subheader("3. Questionnaire Général (Saisie Ligne par Ligne)")
+        elif "📋 4." in admin_section:
+            st.subheader("4. Questionnaire Général")
             new_gen = []
-            gen_questions = q_data.get("general", [])
-            nb_gen = st.number_input("Nombre de questions générales", min_value=1, max_value=30, value=len(gen_questions))
+            gen_curr = cfg_admin.get("general", [])
+            nb_g = st.number_input("Nombre de questions générales", min_value=1, max_value=30, value=len(gen_curr))
 
-            for i in range(int(nb_gen)):
+            for i in range(int(nb_g)):
                 with st.expander(f"📋 Question n°{i+1}", expanded=True):
-                    q_curr = gen_questions[i] if i < len(gen_questions) else {}
-                    q_txt = st.text_input(f"Intitulé Question {i+1}", value=q_curr.get("texte", ""), key=f"qtxt_{i}")
-                    opts_init_str = "\n".join(q_curr.get("options", [])) if isinstance(q_curr.get("options"), list) else q_curr.get("options", "")
-                    opts_text = st.text_area("Options de réponse (1 option par ligne)", value=opts_init_str, key=f"optsarea_{i}")
-                    opts_list = [line.strip() for line in opts_text.split("\n") if line.strip()]
+                    q_item = gen_curr[i] if i < len(gen_curr) else {}
+                    q_txt = st.text_input(f"Intitulé Question {i+1}", value=q_item.get("texte", ""), key=f"qtxt_{i}")
+                    opts_init = "\n".join(q_item.get("options", [])) if isinstance(q_item.get("options"), list) else q_item.get("options", "")
+                    opts_raw = st.text_area("Options (1 par ligne)", value=opts_init, key=f"opts_{i}")
+                    opts_list = [l.strip() for l in opts_raw.split("\n") if l.strip()]
 
                     rep_idx = 0
                     if opts_list:
-                        default_rep = q_curr.get("reponse", 0)
-                        rep_idx = default_rep if default_rep < len(opts_list) else 0
-                        chosen_rep = st.radio("Cochez la bonne réponse attendue :", opts_list, index=rep_idx, key=f"chreprad_{i}")
-                        rep_idx = opts_list.index(chosen_rep)
+                        def_rep = q_item.get("reponse", 0)
+                        rep_idx = def_rep if def_rep < len(opts_list) else 0
+                        chosen = st.radio("Bonne réponse :", opts_list, index=rep_idx, key=f"ch_{i}")
+                        rep_idx = opts_list.index(chosen)
 
-                    col_elim, col_pts = st.columns(2)
-                    with col_elim: is_elim = st.checkbox("🚨 Question Éliminatoire", value=q_curr.get("eliminatoire", False), key=f"elim_{i}")
-                    with col_pts: pts = st.number_input("Points (pas de 0.5)", min_value=0.5, max_value=5.0, step=0.5, value=float(q_curr.get("points", 1.0)), key=f"pts_{i}")
+                    c_elim, c_pts = st.columns(2)
+                    with c_elim: is_elim = st.checkbox("🚨 Éliminatoire", value=q_item.get("eliminatoire", False), key=f"elim_{i}")
+                    with c_pts: pts = st.number_input("Points", min_value=0.5, max_value=5.0, step=0.5, value=float(q_item.get("points", 1.0)), key=f"pts_{i}")
 
                     new_gen.append({"id": f"q_{i+1}", "texte": q_txt, "options": opts_list, "reponse": rep_idx, "points": pts, "eliminatoire": is_elim})
 
             if st.button("💾 Enregistrer le Questionnaire Général"):
-                q_data["general"] = new_gen
-                sauvegarder_questions(q_data)
-                st.success("Questionnaire général enregistré !")
+                cfg_admin["general"] = new_gen
+                sauvegarder_config(cfg_admin)
+                st.success("Questionnaire général sauvegardé !")
 
-        elif "🚜 4." in admin_section:
-            st.subheader("4. Module Spécifique Engins / Grues")
+        elif "🚜 5." in admin_section:
+            st.subheader("5. Module Spécifique Engins / Grues")
             new_eng = []
-            eng_questions = q_data.get("engins", [])
-            nb_eng = st.number_input("Nombre de questions engins", min_value=0, max_value=15, value=len(eng_questions))
+            eng_curr = cfg_admin.get("engins", [])
+            nb_e = st.number_input("Nombre de questions engins", min_value=0, max_value=15, value=len(eng_curr))
 
-            for k in range(int(nb_eng)):
+            for k in range(int(nb_e)):
                 with st.expander(f"🚜 Question Engin n°{k+1}", expanded=True):
-                    q_eng_curr = eng_questions[k] if k < len(eng_questions) else {}
-                    q_eng_txt = st.text_input(f"Intitulé Question Engin {k+1}", value=q_eng_curr.get("texte", ""), key=f"qengtxt_{k}")
-                    opts_eng_init_str = "\n".join(q_eng_curr.get("options", [])) if isinstance(q_eng_curr.get("options"), list) else q_eng_curr.get("options", "")
-                    opts_eng_text = st.text_area("Options de réponse (1 par ligne)", value=opts_eng_init_str, key=f"optsengarea_{k}")
-                    opts_eng_list = [line.strip() for line in opts_eng_text.split("\n") if line.strip()]
+                    q_e_item = eng_curr[k] if k < len(eng_curr) else {}
+                    q_e_txt = st.text_input(f"Intitulé Question Engin {k+1}", value=q_e_item.get("texte", ""), key=f"qengtxt_{k}")
+                    opts_e_init = "\n".join(q_e_item.get("options", [])) if isinstance(q_e_item.get("options"), list) else q_e_item.get("options", "")
+                    opts_e_raw = st.text_area("Options engin (1 par ligne)", value=opts_e_init, key=f"optseng_{k}")
+                    opts_e_list = [l.strip() for l in opts_e_raw.split("\n") if l.strip()]
 
-                    rep_eng_idx = 0
-                    if opts_eng_list:
-                        default_eng_rep = q_eng_curr.get("reponse", 0)
-                        rep_eng_idx = default_eng_rep if default_eng_rep < len(opts_eng_list) else 0
-                        chosen_eng_rep = st.radio("Cochez la bonne réponse engin attendue :", opts_eng_list, index=rep_eng_idx, key=f"chrepengrad_{k}")
-                        rep_eng_idx = opts_eng_list.index(chosen_eng_rep)
+                    rep_e_idx = 0
+                    if opts_e_list:
+                        def_e_rep = q_e_item.get("reponse", 0)
+                        rep_e_idx = def_e_rep if def_e_rep < len(opts_e_list) else 0
+                        chosen_e = st.radio("Bonne réponse engin :", opts_e_list, index=rep_e_idx, key=f"cheng_{k}")
+                        rep_e_idx = opts_e_list.index(chosen_e)
 
-                    pts_eng = st.number_input("Points engin", min_value=0.5, max_value=5.0, step=0.5, value=float(q_eng_curr.get("points", 1.0)), key=f"ptseng_{k}")
-                    new_eng.append({"id": f"q_eng_{k+1}", "texte": q_eng_txt, "options": opts_eng_list, "reponse": rep_eng_idx, "points": pts_eng})
+                    pts_e = st.number_input("Points engin", min_value=0.5, max_value=5.0, step=0.5, value=float(q_e_item.get("points", 1.0)), key=f"ptseng_{k}")
+                    new_eng.append({"id": f"q_eng_{k+1}", "texte": q_e_txt, "options": opts_e_list, "reponse": rep_e_idx, "points": pts_e})
 
             if st.button("💾 Enregistrer le Questionnaire Engins"):
-                q_data["engins"] = new_eng
-                sauvegarder_questions(q_data)
-                st.success("Questionnaire engins enregistré !")
+                cfg_admin["engins"] = new_eng
+                sauvegarder_config(cfg_admin)
+                st.success("Questionnaire engins sauvegardé !")
 
-        elif "📊 5." in admin_section:
+        elif "📊 6." in admin_section:
             st.subheader("📊 Registre Historique Airtable")
-            records_airtable = lire_airtable()
-            if records_airtable:
-                st.dataframe(pd.DataFrame(records_airtable), use_container_width=True)
-            else:
-                st.info("Aucune donnée disponible dans Airtable (vérifier la configuration des Secrets).")
+            rec = lire_airtable()
+            if rec: st.dataframe(pd.DataFrame(rec), use_container_width=True)
+            else: st.info("Aucune donnée disponible.")
     else:
         st.info("Saisissez le code secret administrateur pour accéder à la gestion.")
