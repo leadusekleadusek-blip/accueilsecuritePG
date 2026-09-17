@@ -11,7 +11,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 import qrcode
 
 # =========================================================================
-# 1. CONFIGURATION INITIALE & STYLES P&G
+# 1. CONFIGURATION INITIALE & STYLES ADAPTATIFS (LIGHT & DARK MODE)
 # =========================================================================
 
 st.set_page_config(
@@ -20,39 +20,67 @@ st.set_page_config(
     layout="wide"
 )
 
-# Style visuel sans barre de navigation ouverte aux candidats
+# CSS adaptatif utilisant les variables de thème dynamiques de Streamlit
 st.markdown("""
     <style>
+        /* Police globale */
+        html, body, [class*="css"] {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+        }
+
+        /* En-tête principal P&G - compatible Mode Sombre et Clair */
         .main-header {
-            background-color: #003B71;
-            padding: 15px;
-            border-radius: 8px;
-            color: white;
+            background: linear-gradient(135deg, #003B71 0%, #005691 100%);
+            padding: 20px;
+            border-radius: 10px;
+            color: #FFFFFF !important;
             text-align: center;
             margin-bottom: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15);
         }
+        .main-header h1 {
+            color: #FFFFFF !important;
+            margin: 0;
+            font-size: 1.8rem;
+            font-weight: 700;
+        }
+
+        /* Cartes de sections adaptatives */
         .section-card {
-            background-color: #F0F4F8;
+            background-color: var(--secondary-background-color);
             border-left: 6px solid #003B71;
-            padding: 15px 20px;
-            border-radius: 4px;
-            margin-top: 15px;
-            margin-bottom: 20px;
-        }
-        .flash-card {
-            background-color: #FFF9E6;
-            border-left: 6px solid #FFC107;
-            padding: 15px;
-            border-radius: 4px;
-            margin-bottom: 15px;
-        }
-        .quiz-card {
-            background-color: #FFFFFF;
-            border: 1px solid #E2E8F0;
-            padding: 15px;
+            padding: 18px 22px;
             border-radius: 6px;
-            margin-bottom: 12px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            margin-top: 20px;
+            margin-bottom: 20px;
+            color: var(--text-color);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        /* Cartes Questions-Flash */
+        .flash-card {
+            background-color: var(--secondary-background-color);
+            border-left: 6px solid #FFC107;
+            padding: 16px 20px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            color: var(--text-color);
+        }
+
+        /* Conteneurs de questions */
+        .quiz-card {
+            background-color: var(--secondary-background-color);
+            border: 1px solid rgba(128, 128, 128, 0.2);
+            padding: 18px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            color: var(--text-color);
+        }
+
+        /* Ajustement des boutons principaux */
+        div.stButton > button {
+            border-radius: 6px;
+            font-weight: 600;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -180,9 +208,7 @@ if page == "🏢 Portail Intervenant":
     if "reponses_flash_engins" not in st.session_state:
         st.session_state.reponses_flash_engins = False
 
-    # ---------------------------------------------------------------------
     # ÉTAPE 1 : IDENTIFICATION
-    # ---------------------------------------------------------------------
     if st.session_state.step == 1:
         st.markdown('<div class="section-card"><h2>👤 Étape 1 : Identification de l\'Intervenant</h2></div>', unsafe_allow_html=True)
         
@@ -211,9 +237,7 @@ if page == "🏢 Portail Intervenant":
                 else:
                     st.error("Veuillez remplir vos informations nominatives.")
 
-    # ---------------------------------------------------------------------
     # ÉTAPE 2 : VISIONNAGE VIDÉO & QUESTIONS-FLASH
-    # ---------------------------------------------------------------------
     elif st.session_state.step == 2:
         st.markdown('<div class="section-card"><h2>🎥 Étape 2 : Sensibilisation Vidéo & Questions-Flash</h2></div>', unsafe_allow_html=True)
         
@@ -248,9 +272,7 @@ if page == "🏢 Portail Intervenant":
             st.session_state.step = 3
             st.rerun()
 
-    # ---------------------------------------------------------------------
     # ÉTAPE 3 : QUESTIONNAIRES DE VALIDATION
-    # ---------------------------------------------------------------------
     elif st.session_state.step == 3:
         st.markdown('<div class="section-card"><h2>📝 Étape 3 : Questionnaire de Validation</h2></div>', unsafe_allow_html=True)
         q_db = charger_questions()
@@ -285,9 +307,7 @@ if page == "🏢 Portail Intervenant":
             st.session_state.step = 4
             st.rerun()
 
-    # ---------------------------------------------------------------------
     # ÉTAPE 4 : SIGNATURE & RÉSULTATS
-    # ---------------------------------------------------------------------
     elif st.session_state.step == 4:
         st.markdown('<div class="section-card"><h2>✍️ Étape 4 : Attestation sur l\'honneur & Validation</h2></div>', unsafe_allow_html=True)
         
@@ -345,7 +365,7 @@ if page == "🏢 Portail Intervenant":
                 st.rerun()
 
 # -------------------------------------------------------------------------
-# B. ESPACE ADMINISTRATEUR HSE (MENU NAVIGATION ADMIN EXCLUSIF)
+# B. ESPACE ADMINISTRATEUR HSE
 # -------------------------------------------------------------------------
 elif page == "⚙️ Espace Administrateur HSE":
     st.markdown("""
@@ -358,7 +378,6 @@ elif page == "⚙️ Espace Administrateur HSE":
     if pwd == ADMIN_PASSWORD:
         st.sidebar.success("Accès Administrateur Autorisé")
         
-        # NAVIGATION ADMIN EXCLUSIVE
         admin_section = st.sidebar.radio(
             "📌 Section Admin :",
             ["⚙️ 1. Vidéo Cloud", "⚡ 2. Questions-Flash", "📋 3. Questionnaire Général", "🚜 4. Questionnaire Engins", "📊 5. Registre des Résultats"]
