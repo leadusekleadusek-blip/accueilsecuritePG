@@ -61,16 +61,6 @@ AIRTABLE_TABLE_NAME = st.secrets.get("AIRTABLE_TABLE_NAME", "RegistreAccueils")
 
 LOGO_PG_URL = "https://upload.wikimedia.org/wikipedia/commons/8/85/Procter_%26_Gamble_logo.svg"
 
-if "video_url" not in st.session_state: st.session_state.video_url = ""
-if "video_started" not in st.session_state: st.session_state.video_started = False
-if "video_ended" not in st.session_state: st.session_state.video_ended = False
-if "reponses_flash_engins" not in st.session_state: st.session_state.reponses_flash_engins = False
-if "score_flash_correct" not in st.session_state: st.session_state.score_flash_correct = 0
-if "total_flash_eval" not in st.session_state: st.session_state.total_flash_eval = 0
-if "flash_repondues" not in st.session_state: st.session_state.flash_repondues = set()
-if "questions_flash_tirees" not in st.session_state: st.session_state.questions_flash_tirees = {}
-if "temp_confirm_flash" not in st.session_state: st.session_state.temp_confirm_flash = False
-
 # =========================================================================
 # 2. GESTION BASE DE DONNÉES & AIRTABLE
 # =========================================================================
@@ -78,6 +68,7 @@ if "temp_confirm_flash" not in st.session_state: st.session_state.temp_confirm_f
 def charger_questions():
     if not os.path.exists(QUESTIONS_FILE):
         def_q = {
+            "video_url": "",
             "flash": [
                 {
                     "minutes": 1, "secondes": 30,
@@ -96,11 +87,27 @@ def charger_questions():
             json.dump(def_q, f, ensure_ascii=False, indent=4)
         return def_q
     with open(QUESTIONS_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        data = json.load(f)
+        if "video_url" not in data:
+            data["video_url"] = ""
+        return data
 
 def sauvegarder_questions(data):
     with open(QUESTIONS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+if "video_url" not in st.session_state:
+    config_init = charger_questions()
+    st.session_state.video_url = config_init.get("video_url", "")
+
+if "video_started" not in st.session_state: st.session_state.video_started = False
+if "video_ended" not in st.session_state: st.session_state.video_ended = False
+if "reponses_flash_engins" not in st.session_state: st.session_state.reponses_flash_engins = False
+if "score_flash_correct" not in st.session_state: st.session_state.score_flash_correct = 0
+if "total_flash_eval" not in st.session_state: st.session_state.total_flash_eval = 0
+if "flash_repondues" not in st.session_state: st.session_state.flash_repondues = set()
+if "questions_flash_tirees" not in st.session_state: st.session_state.questions_flash_tirees = {}
+if "temp_confirm_flash" not in st.session_state: st.session_state.temp_confirm_flash = False
 
 def enregistrer_airtable(donnees):
     if not AIRTABLE_API_KEY or not AIRTABLE_BASE_ID: return False
@@ -255,11 +262,11 @@ if page == "🏢 Portail Intervenant":
                     st.rerun()
                 else: st.error("Veuillez remplir vos informations nominatives.")
 
-    # ÉTAPE 2 : VIDÉO, QUESTIONS-FLASH 30S & CONFIRMATION
+    # ÉTAPE 2 : VIDÉO, QUESTIONS-FLASH ET ACCÈS QUESTIONNAIRE
     elif st.session_state.step == 2:
         st.markdown('<div class="section-card"><h2>🎥 Étape 2 : Sensibilisation Vidéo & Questions-Flash</h2></div>', unsafe_allow_html=True)
 
-        # Bouton initial (disparaît complètement dès que cliqué)
+        # 1. BOUTON INITIAL DE LANCEMENT (Disparaît dès qu'on clique dessus)
         if not st.session_state.video_started:
             st.info("Cliquez sur le bouton ci-dessous pour démarrer la séance. Le chronomètre officiel sera activé.")
             if st.button("▶️ LANCER LA VIDÉO D'ACCUEIL SÉCURITÉ", type="primary"):
@@ -271,7 +278,7 @@ if page == "🏢 Portail Intervenant":
             flash_list = q_db.get("flash", [])
             elapsed_sec = int((datetime.now() - st.session_state.start_time).total_seconds())
 
-            # Détection des questions-flash
+            # Détection de la question-flash active (non encore répondue)
             flash_active_idx = None
             for idx, f in enumerate(flash_list):
                 target_sec = (f.get("minutes", 0) * 60) + f.get("secondes", 0)
@@ -279,14 +286,14 @@ if page == "🏢 Portail Intervenant":
                     flash_active_idx = idx
                     break
 
-            # 1. MESSAGE TEMPORAIRE "RÉPONSE ENREGISTRÉE"
+            # 2. MESSAGE TEMPORAIRE DE CONFIRMATION (Affiché pendant 1 seconde puis s'efface)
             if st.session_state.temp_confirm_flash:
                 st.success("✅ **Réponse enregistrée.** Reprise de la vidéo...")
-                time.sleep(2)
+                time.sleep(1)
                 st.session_state.temp_confirm_flash = False
                 st.rerun()
 
-            # 2. POP-UP QUESTION-FLASH AVEC DÉLAI DE 30 SECONDES
+            # 3. QUESTION-FLASH ACTIVE (DISPARAÎT DÈS QUE RÉPONDU)
             elif flash_active_idx is not None:
                 st.warning("⏸️ VIDÉO EN PAUSE — Question-Flash (Délai : 30 secondes)")
                 f_active = flash_list[flash_active_idx]
@@ -325,6 +332,7 @@ if page == "🏢 Portail Intervenant":
                             if ans_f == q_selected.get("reponse"):
                                 st.session_state.score_flash_correct += 1
 
+                        # On marque immédiatement la question comme répondue
                         st.session_state.flash_repondues.add(flash_active_idx)
                         st.session_state.temp_confirm_flash = True
                         st.rerun()
@@ -335,24 +343,27 @@ if page == "🏢 Portail Intervenant":
                     time.sleep(1)
                     st.rerun()
 
-            # 3. FIN DE VIDÉO ET MESSAGE BILAN
+            # 4. FIN DE VIDÉO : BILAN ET BOUTON D'ACCÈS OBLIGATOIRE AU QUESTIONNAIRE
             elif st.session_state.get("video_ended", False):
                 st.markdown("---")
                 if st.session_state.total_flash_eval > 0 and st.session_state.score_flash_correct == st.session_state.total_flash_eval:
-                    st.success("🌟 **Super, vous avez été très attentif pendant la vidéo !**")
+                    st.success("🌟 **Super, vous avez été très attentif pendant la vidéo !** Passons au questionnaire de validation.")
                 else:
-                    st.info("💡 **Veuillez rester bien attentif et concentré pour le questionnaire.**")
+                    st.info("💡 **Veuillez rester bien attentif et concentré** pour répondre au questionnaire ci-dessous.")
 
                 if st.button("Passer au questionnaire de validation des connaissances ➔", type="primary", use_container_width=True):
                     st.session_state.step = 3
                     st.rerun()
 
-            # 4. LECTEUR VIDÉO BRIDÉ
+            # 5. LECTEUR VIDÉO BRIDÉ (SANS BARRE DE RECHERCHE, DÉTECTION FIN DE LECTURE)
             else:
-                v_url = st.session_state.video_url
+                v_url = st.session_state.video_url or q_db.get("video_url", "")
                 if v_url:
                     if "iframe" in v_url.lower() or "embed" in v_url.lower():
                         st.components.v1.html(v_url, height=450)
+                        if st.button("J'ai terminé de visionner la vidéo ➔", type="primary"):
+                            st.session_state.video_ended = True
+                            st.rerun()
                     else:
                         video_locked_html = f"""
                         <div style="position: relative; width: 100%; max-width: 800px; margin: auto; user-select: none;">
@@ -365,17 +376,28 @@ if page == "🏢 Portail Intervenant":
                         <script>
                             const vid = document.getElementById('pgLockedVideo');
                             vid.play();
+
+                            // Bloque la vitesse à 1.0x en permanence
                             setInterval(() => {{ if (vid.playbackRate !== 1.0) vid.playbackRate = 1.0; }}, 200);
+
+                            // Interdit le menu contextuel clic-droit
                             document.addEventListener('contextmenu', event => event.preventDefault());
+
+                            // Détecte la fin automatique de la vidéo
+                            vid.onended = function() {{
+                                window.parent.postMessage({{type: 'streamlit:setComponentValue', value: true}}, '*');
+                            }};
                         </script>
                         """
                         st.components.v1.html(video_locked_html, height=460)
 
-                        if st.button("J'ai terminé le visionnage de la vidéo ➔"):
-                            st.session_state.video_ended = True
-                            st.rerun()
+                        col_f1, col_f2 = st.columns([3, 1])
+                        with col_f2:
+                            if st.button("J'ai terminé le visionnage ➔"):
+                                st.session_state.video_ended = True
+                                st.rerun()
                 else:
-                    st.info("📹 Vidéo en cours de lecture...")
+                    st.info("📹 Aucune vidéo enregistrée. Veuillez configurer l'URL dans l'Espace Administrateur.")
 
                 time.sleep(3)
                 st.rerun()
@@ -411,7 +433,7 @@ if page == "🏢 Portail Intervenant":
             st.session_state.step = 4
             st.rerun()
 
-    # ÉTAPE 4 : SIGNATURE & VALIDATION STRICTE DES DURÉES ET QUESTIONS-FLASH
+    # ÉTAPE 4 : SIGNATURE & SOUMISSION
     elif st.session_state.step == 4:
         st.markdown('<div class="section-card"><h2>✍️ Étape 4 : Attestation sur l\'honneur & Validation</h2></div>', unsafe_allow_html=True)
         
@@ -424,15 +446,12 @@ if page == "🏢 Portail Intervenant":
                 score_gen = 0.0
                 fautes_elim = 0
                 
-                # Durée effective
                 start_time = st.session_state.get("start_time", datetime.now())
                 temps_presence_min = int((datetime.now() - start_time).total_seconds() / 60)
 
-                # RÈGLE DURÉE MINIMALE : 40 min de base, 50 min si Engins (+10 min)
                 min_requis = 50 if st.session_state.reponses_flash_engins else 40
-                max_autorise = 60  # Durée maximale 1h
+                max_autorise = 60
 
-                # Correction des questions générales
                 reponses_gen = st.session_state.get("reponses_gen_val", {})
                 for idx, q in enumerate(q_db.get("general", [])):
                     opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
@@ -445,7 +464,6 @@ if page == "🏢 Portail Intervenant":
                 ud["score_general"] = score_gen
                 ud["timestamp"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-                # CONTRÔLES ANTI-TRICHE STRICTS
                 total_flash_config = len(q_db.get("flash", []))
                 flash_repondues_count = len(st.session_state.flash_repondues)
 
@@ -507,10 +525,14 @@ elif page == "⚙️ Espace Administrateur HSE":
 
         if "⚙️ 1." in admin_section:
             st.subheader("1. Vidéo Cloud Entreprise (Stream / SharePoint / Direct MP4)")
-            v_input = st.text_area("Lien Web Direct (.mp4) OU Code d'intégration Embed (<iframe>)", value=st.session_state.video_url, height=100)
-            if st.button("Enregistrer le paramètre vidéo"):
+            url_enregistree = q_data.get("video_url", "")
+            v_input = st.text_area("Lien Web Direct (.mp4) OU Code d'intégration Embed (<iframe>)", value=url_enregistree, height=100)
+            
+            if st.button("💾 Enregistrer Définitivement l'URL de la Vidéo"):
+                q_data["video_url"] = v_input
+                sauvegarder_questions(q_data)
                 st.session_state.video_url = v_input
-                st.success("Configuration vidéo enregistrée !")
+                st.success("L'URL de la vidéo a été sauvegardée définitivement !")
 
         elif "⚡ 2." in admin_section:
             st.subheader("2. Banques de Questions-Flash Aléatoires")
