@@ -8,8 +8,9 @@ import pandas as pd
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 import qrcode
 
 # =========================================================================
@@ -52,11 +53,15 @@ st.markdown("""
 ADMIN_PASSWORD = "Casque rouge P&G26"
 QUESTIONS_FILE = "questions.json"
 FORMS_DIR = "pdf_generated"
+TEMPS_MIN_REQUIS = 40  # Minutes minimum obligatoires
+TEMPS_MAX_AUTORISE = 70 # Minutes maximum autorisées
 os.makedirs(FORMS_DIR, exist_ok=True)
 
 AIRTABLE_API_KEY = st.secrets.get("AIRTABLE_API_KEY", "")
 AIRTABLE_BASE_ID = st.secrets.get("AIRTABLE_BASE_ID", "")
 AIRTABLE_TABLE_NAME = st.secrets.get("AIRTABLE_TABLE_NAME", "RegistreAccueils")
+
+LOGO_PG_URL = "https://upload.wikimedia.org/wikipedia/commons/8/85/Procter_%26_Gamble_logo.svg"
 
 if "video_url" not in st.session_state: st.session_state.video_url = ""
 if "video_started" not in st.session_state: st.session_state.video_started = False
@@ -134,42 +139,149 @@ def lire_airtable():
         return []
     except Exception: return []
 
+# =========================================================================
+# 3. GÉNÉRATION DU PASS SÉCURITÉ PDF (DESIGN OFFICIEL P&G)
+# =========================================================================
+
 def generer_pdf(d):
     filepath = os.path.join(FORMS_DIR, f"Pass_Securite_{d['nom']}_{d['prenom']}.pdf")
-    doc = SimpleDocTemplate(filepath, pagesize=letter)
+    doc = SimpleDocTemplate(
+        filepath,
+        pagesize=letter,
+        leftMargin=36,
+        rightMargin=36,
+        topMargin=36,
+        bottomMargin=36
+    )
     story = []
     styles = getSampleStyleSheet()
 
+    # Style personnalisés
+    title_style = ParagraphStyle(
+        'DocTitle',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=18,
+        leading=22,
+        textColor=colors.HexColor('#003B71')
+    )
+    subtitle_style = ParagraphStyle(
+        'DocSubTitle',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=10,
+        leading=12,
+        textColor=colors.HexColor('#4A5568')
+    )
+    label_style = ParagraphStyle(
+        'CellLabel',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=10,
+        leading=13,
+        textColor=colors.HexColor('#003B71')
+    )
+    val_style = ParagraphStyle(
+        'CellVal',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=10,
+        leading=13,
+        textColor=colors.HexColor('#2D3748')
+    )
+
+    # 1. En-tête avec Logo P&G
+    logo_path = "temp_logo_pg.png"
+    try:
+        if not os.path.exists(logo_path):
+            r_logo = requests.get(LOGO_PG_URL)
+            if r_logo.status_code == 200:
+                with open(logo_path, 'wb') as f:
+                    f.write(r_logo.content)
+        img_logo = Image(logo_path, width=70, height=70)
+    except Exception:
+        img_logo = Paragraph("<font color='#003B71' size=24><b>P&amp;G</b></font>", styles['Normal'])
+
     header_table = Table([
-        [Paragraph("<font size=22 color='#003B71'><b>P&amp;G</b></font>", styles['Normal']),
-         Paragraph("<font color='#003B71' size=14><b>ATTESTATION D'ACCUEIL SÉCURITÉ SITE</b><br/><font size=9 color='#4A5568'>Procter &amp; Gamble Amiens</font></font>", styles['Normal'])]
-    ], colWidths=[100, 400])
+        [
+            img_logo,
+            [
+                Paragraph("ATTESTATION D'ACCUEIL SÉCURITÉ SITE", title_style),
+                Spacer(1, 4),
+                Paragraph("Procter &amp; Gamble Amiens — Direction HSE &amp; Sûreté", subtitle_style)
+            ]
+        ]
+    ], colWidths=[90, 450])
+    header_table.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('ALIGN', (0,0), (0,0), 'CENTER')
+    ]))
     story.append(header_table)
     story.append(Spacer(1, 15))
-    
+
+    # Ligne de séparation P&G Blue
+    sep_table = Table([['']], colWidths=[540], rowHeights=[3])
+    sep_table.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#003B71'))]))
+    story.append(sep_table)
+    story.append(Spacer(1, 15))
+
+    # 2. Données Intervenant & Statuts
     now = datetime.now()
     exp = datetime(now.year + 1, now.month, now.day)
     
-    txt = f"""
-    <b>INTERVENANT :</b> {d['prenom']} {d['nom'].upper()}<br/>
-    <b>ENTREPRISE :</b> {d['entreprise']}<br/>
-    <b>DATE DE VALIDATION :</b> {now.strftime('%d/%m/%Y')}<br/>
-    <b>EXPIRATION :</b> {exp.strftime('%d/%m/%Y')} <i>(Valable 1 an)</i><br/><br/>
-    <b>STATUT SÉCURITÉ GÉNÉRAL :</b> <font color='green'><b>🟢 ACCUEIL VALIDÉ</b></font><br/>
-    <b>AUTORISATION ENGINS / GRUES :</b> {d['statut_engins']}
-    """
-    story.append(Paragraph(txt, styles['Normal']))
-    story.append(Spacer(1, 15))
+    statut_engins_str = d.get('statut_engins', 'NON_CONCERNE')
+    badge_engins = f"<font color='green'><b>AUTORISÉE</b></font>" if statut_engins_str == "AUTORISÉE" else "NON CONCERNÉ"
 
-    qr_img = qrcode.make(f"PG_VALIDATED|{d['nom']}|{d['prenom']}|EXP:{exp.strftime('%Y%m%d')}")
-    qr_img.save("temp_qr.png")
-    story.append(Image("temp_qr.png", width=90, height=90))
+    table_data = [
+        [Paragraph("NOM &amp; PRÉNOM", label_style), Paragraph(f"<b>{d['nom'].upper()}</b> {d['prenom'].capitalize()}", val_style)],
+        [Paragraph("ENTREPRISE", label_style), Paragraph(d['entreprise'], val_style)],
+        [Paragraph("DATE DE PASSATION", label_style), Paragraph(now.strftime('%d/%m/%Y à %H:%M'), val_style)],
+        [Paragraph("DATE D'EXPIRATION", label_style), Paragraph(f"<b>{exp.strftime('%d/%m/%Y')}</b> <i>(Valable 1 an)</i>", val_style)],
+        [Paragraph("DURÉE SESSION", label_style), Paragraph(f"{d.get('temps_presence', 40)} minutes (Conforme)", val_style)],
+        [Paragraph("STATUT SÉCURITÉ", label_style), Paragraph("<font color='green'><b>🟢 ACCUEIL SÉCURITÉ VALIDÉ</b></font>", val_style)],
+        [Paragraph("AUTORISATION ENGINS", label_style), Paragraph(badge_engins, val_style)]
+    ]
+
+    info_table = Table(table_data, colWidths=[160, 380])
+    info_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#F0F4F8')),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#CBD5E0')),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('PADDING', (0,0), (-1,-1), 8)
+    ]))
+    story.append(info_table)
+    story.append(Spacer(1, 20))
+
+    # 3. Validation Poste de Garde & QR Code
+    qr_payload = f"PG_AMIENS_PASS|{d['nom']}|{d['prenom']}|{d['entreprise']}|EXP:{exp.strftime('%Y%m%d')}"
+    temp_qr_path = f"temp_qr_{d['nom']}.png"
+    qr = qrcode.make(qr_payload)
+    qr.save(temp_qr_path)
+
+    qr_text = """
+    <b>CONTRÔLE POSTE DE GARDE :</b><br/>
+    <font size=8 color='#4A5568'>
+    Ce Pass Sécurité atteste que l'intervenant a suivi l'intégralité de la sensibilisation aux risques du site P&amp;G Amiens et a validé le questionnaire de sécurité.<br/><br/>
+    <b>Instructions :</b> Flasher le QR Code ci-contre pour vérifier la validité de l'attestation en base de données avant de délivrer le badge d'accès site.
+    </font>
+    """
+
+    control_table = Table([
+        [Image(temp_qr_path, width=95, height=95), Paragraph(qr_text, styles['Normal'])]
+    ], colWidths=[110, 430])
+    control_table.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#003B71')),
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#FAFAFA')),
+        ('PADDING', (0,0), (-1,-1), 10)
+    ]))
+    story.append(control_table)
 
     doc.build(story)
     return filepath
 
 # =========================================================================
-# 3. PORTAIL INTERVENANT
+# 4. PORTAIL INTERVENANT
 # =========================================================================
 
 st.sidebar.markdown("# **P&G Amiens**")
@@ -223,12 +335,11 @@ if page == "🏢 Portail Intervenant":
                     flash_active_idx = idx
                     break
 
-            # SI UNE QUESTION-FLASH EST DÉCLENCHÉE : PAUSE ET POP-UP EXCLUSIF
+            # PAUSE & POP-UP
             if flash_active_idx is not None:
                 st.warning("⏸️ VIDÉO EN PAUSE — Question-Flash de vérification")
                 f_active = flash_list[flash_active_idx]
 
-                # Tirage au sort d'une question dans la banque si pas fait
                 if flash_active_idx not in st.session_state.questions_flash_tirees:
                     banque = f_active.get("banque_questions", [])
                     st.session_state.questions_flash_tirees[flash_active_idx] = random.choice(banque) if banque else {"texte": "Question indisponible", "reponse": "Vrai"}
@@ -257,7 +368,6 @@ if page == "🏢 Portail Intervenant":
                     st.rerun()
 
             else:
-                # LECTEUR VIDÉO BRIDÉ (SANS CURSEUR NI AVANCE RAPIDE)
                 v_url = st.session_state.video_url
                 if v_url:
                     if "iframe" in v_url.lower() or "embed" in v_url.lower():
@@ -281,7 +391,6 @@ if page == "🏢 Portail Intervenant":
                 else:
                     st.info("📹 Vidéo en cours de lecture...")
 
-                # Auto-rafraîchissement toutes les 3s pour vérifier le chrono des questions-flash
                 time.sleep(3)
                 st.rerun()
 
@@ -321,7 +430,7 @@ if page == "🏢 Portail Intervenant":
             st.session_state.step = 4
             st.rerun()
 
-    # ÉTAPE 4 : SIGNATURE & SOUMISSION
+    # ÉTAPE 4 : SIGNATURE & VALIDATION STRICTE DU TEMPS DE PRÉSENCE
     elif st.session_state.step == 4:
         st.markdown('<div class="section-card"><h2>✍️ Étape 4 : Attestation sur l\'honneur & Validation</h2></div>', unsafe_allow_html=True)
         
@@ -334,6 +443,11 @@ if page == "🏢 Portail Intervenant":
                 score_gen = 0.0
                 fautes_elim = 0
                 
+                # 1. Calcul du temps effectif de présence
+                start_time = st.session_state.get("start_time", datetime.now())
+                temps_presence_min = int((datetime.now() - start_time).total_seconds() / 60)
+
+                # 2. Correction des réponses
                 reponses_gen = st.session_state.get("reponses_gen_val", {})
                 for idx, q in enumerate(q_db.get("general", [])):
                     opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
@@ -342,11 +456,22 @@ if page == "🏢 Portail Intervenant":
                     elif q.get("eliminatoire"): fautes_elim += 1
 
                 ud = st.session_state.get("user_data", {"nom": "NOM", "prenom": "Prenom", "entreprise": "Entreprise"})
-                ud["temps_presence"] = 42
+                ud["temps_presence"] = temps_presence_min
                 ud["score_general"] = score_gen
                 ud["timestamp"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-                if fautes_elim == 0 and score_gen >= 1.0:
+                # 3. CONTRÔLE STRICT DES TEMPS LIMITES (40 MIN MINIMUM)
+                motif_echec = ""
+                if temps_presence_min < TEMPS_MIN_REQUIS:
+                    motif_echec = f"Durée de session non conforme ({temps_presence_min} min vs {TEMPS_MIN_REQUIS} min minimum requis)."
+                elif temps_presence_min > TEMPS_MAX_AUTORISE:
+                    motif_echec = f"Dépassement du temps plafond autorisé ({temps_presence_min} min vs {TEMPS_MAX_AUTORISE} min max)."
+                elif fautes_elim > 0:
+                    motif_echec = "Échec sur au moins une question éliminatoire de sécurité."
+                elif score_gen < 1.0:
+                    motif_echec = "Score global insuffisant."
+
+                if not motif_echec:
                     ud["statut_general"] = "VALIDE"
                     ud["statut_engins"] = "AUTORISÉE" if st.session_state.reponses_flash_engins else "NON_CONCERNE"
                     enregistrer_airtable(ud)
@@ -355,7 +480,7 @@ if page == "🏢 Portail Intervenant":
                     ud["statut_general"] = "ECHEC"
                     ud["statut_engins"] = "NON_CONCERNE"
                     enregistrer_airtable(ud)
-                    st.session_state.resultat_final = {"status": "FAILURE", "data": ud}
+                    st.session_state.resultat_final = {"status": "FAILURE", "data": ud, "motif": motif_echec}
 
                 st.rerun()
         else:
@@ -363,12 +488,13 @@ if page == "🏢 Portail Intervenant":
             if res.get("status") == "SUCCESS":
                 st.balloons()
                 st.success("🟢 ACCUEIL SÉCURITÉ VALIDÉ !")
-                st.write(f"Bravo **{res['data']['prenom']} {res['data']['nom']}**, votre score final est de **{res['data']['score_general']} pt(s)**.")
+                st.write(f"Bravo **{res['data']['prenom']} {res['data']['nom']}**, votre score final est de **{res['data']['score_general']} pt(s)** pour une durée de **{res['data']['temps_presence']} min**.")
                 with open(res["pdf"], "rb") as f:
                     st.download_button("📄 Télécharger mon Attestation Sécurité PDF", f, file_name=os.path.basename(res["pdf"]))
             else:
                 st.error("🔴 ÉCHEC DE VALIDATION DE L'ACCUEIL SÉCURITÉ")
-                st.write("Veuillez contacter le service HSE P&G Amiens.")
+                st.write(f"**Motif d'invalidation :** {res.get('motif', 'Résultat non conforme.')}")
+                st.write("Veuillez vous adresser au service HSE du site P&G Amiens.")
 
             if st.button("Terminer et recommencer"):
                 del st.session_state["resultat_final"]
@@ -377,7 +503,7 @@ if page == "🏢 Portail Intervenant":
                 st.rerun()
 
 # =========================================================================
-# 4. ESPACE ADMINISTRATEUR
+# 5. ESPACE ADMINISTRATEUR
 # =========================================================================
 elif page == "⚙️ Espace Administrateur HSE":
     st.markdown("""<div class="main-header"><h1>🔒 Panneau d'Administration HSE — P&G Amiens</h1></div>""", unsafe_allow_html=True)
