@@ -53,8 +53,8 @@ st.markdown("""
 ADMIN_PASSWORD = "Casque rouge P&G26"
 QUESTIONS_FILE = "questions.json"
 FORMS_DIR = "pdf_generated"
-TEMPS_MIN_REQUIS = 40  # Minutes minimum obligatoires
-TEMPS_MAX_AUTORISE = 70 # Minutes maximum autorisées
+TEMPS_MIN_REQUIS = 40  
+TEMPS_MAX_AUTORISE = 70 
 os.makedirs(FORMS_DIR, exist_ok=True)
 
 AIRTABLE_API_KEY = st.secrets.get("AIRTABLE_API_KEY", "")
@@ -65,6 +65,7 @@ LOGO_PG_URL = "https://upload.wikimedia.org/wikipedia/commons/8/85/Procter_%26_G
 
 if "video_url" not in st.session_state: st.session_state.video_url = ""
 if "video_started" not in st.session_state: st.session_state.video_started = False
+if "video_ended" not in st.session_state: st.session_state.video_ended = False
 if "reponses_flash_engins" not in st.session_state: st.session_state.reponses_flash_engins = False
 if "score_flash_correct" not in st.session_state: st.session_state.score_flash_correct = 0
 if "total_flash_eval" not in st.session_state: st.session_state.total_flash_eval = 0
@@ -145,90 +146,37 @@ def lire_airtable():
 
 def generer_pdf(d):
     filepath = os.path.join(FORMS_DIR, f"Pass_Securite_{d['nom']}_{d['prenom']}.pdf")
-    doc = SimpleDocTemplate(
-        filepath,
-        pagesize=letter,
-        leftMargin=36,
-        rightMargin=36,
-        topMargin=36,
-        bottomMargin=36
-    )
+    doc = SimpleDocTemplate(filepath, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     story = []
     styles = getSampleStyleSheet()
 
-    # Style personnalisés
-    title_style = ParagraphStyle(
-        'DocTitle',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=18,
-        leading=22,
-        textColor=colors.HexColor('#003B71')
-    )
-    subtitle_style = ParagraphStyle(
-        'DocSubTitle',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=10,
-        leading=12,
-        textColor=colors.HexColor('#4A5568')
-    )
-    label_style = ParagraphStyle(
-        'CellLabel',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=10,
-        leading=13,
-        textColor=colors.HexColor('#003B71')
-    )
-    val_style = ParagraphStyle(
-        'CellVal',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=10,
-        leading=13,
-        textColor=colors.HexColor('#2D3748')
-    )
+    title_style = ParagraphStyle('DocTitle', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=18, leading=22, textColor=colors.HexColor('#003B71'))
+    subtitle_style = ParagraphStyle('DocSubTitle', parent=styles['Normal'], fontName='Helvetica', fontSize=10, leading=12, textColor=colors.HexColor('#4A5568'))
+    label_style = ParagraphStyle('CellLabel', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, leading=13, textColor=colors.HexColor('#003B71'))
+    val_style = ParagraphStyle('CellVal', parent=styles['Normal'], fontName='Helvetica', fontSize=10, leading=13, textColor=colors.HexColor('#2D3748'))
 
-    # 1. En-tête avec Logo P&G
     logo_path = "temp_logo_pg.png"
     try:
         if not os.path.exists(logo_path):
             r_logo = requests.get(LOGO_PG_URL)
             if r_logo.status_code == 200:
-                with open(logo_path, 'wb') as f:
-                    f.write(r_logo.content)
+                with open(logo_path, 'wb') as f: f.write(r_logo.content)
         img_logo = Image(logo_path, width=70, height=70)
     except Exception:
         img_logo = Paragraph("<font color='#003B71' size=24><b>P&amp;G</b></font>", styles['Normal'])
 
-    header_table = Table([
-        [
-            img_logo,
-            [
-                Paragraph("ATTESTATION D'ACCUEIL SÉCURITÉ SITE", title_style),
-                Spacer(1, 4),
-                Paragraph("Procter &amp; Gamble Amiens — Direction HSE &amp; Sûreté", subtitle_style)
-            ]
-        ]
-    ], colWidths=[90, 450])
-    header_table.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('ALIGN', (0,0), (0,0), 'CENTER')
-    ]))
+    header_table = Table([[img_logo, [Paragraph("ATTESTATION D'ACCUEIL SÉCURITÉ SITE", title_style), Spacer(1, 4), Paragraph("Procter &amp; Gamble Amiens — Direction HSE &amp; Sûreté", subtitle_style)]]], colWidths=[90, 450])
+    header_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('ALIGN', (0,0), (0,0), 'CENTER')]))
     story.append(header_table)
     story.append(Spacer(1, 15))
 
-    # Ligne de séparation P&G Blue
     sep_table = Table([['']], colWidths=[540], rowHeights=[3])
     sep_table.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#003B71'))]))
     story.append(sep_table)
     story.append(Spacer(1, 15))
 
-    # 2. Données Intervenant & Statuts
     now = datetime.now()
     exp = datetime(now.year + 1, now.month, now.day)
-    
     statut_engins_str = d.get('statut_engins', 'NON_CONCERNE')
     badge_engins = f"<font color='green'><b>AUTORISÉE</b></font>" if statut_engins_str == "AUTORISÉE" else "NON CONCERNÉ"
 
@@ -252,7 +200,6 @@ def generer_pdf(d):
     story.append(info_table)
     story.append(Spacer(1, 20))
 
-    # 3. Validation Poste de Garde & QR Code
     qr_payload = f"PG_AMIENS_PASS|{d['nom']}|{d['prenom']}|{d['entreprise']}|EXP:{exp.strftime('%Y%m%d')}"
     temp_qr_path = f"temp_qr_{d['nom']}.png"
     qr = qrcode.make(qr_payload)
@@ -266,9 +213,7 @@ def generer_pdf(d):
     </font>
     """
 
-    control_table = Table([
-        [Image(temp_qr_path, width=95, height=95), Paragraph(qr_text, styles['Normal'])]
-    ], colWidths=[110, 430])
+    control_table = Table([[Image(temp_qr_path, width=95, height=95), Paragraph(qr_text, styles['Normal'])]], colWidths=[110, 430])
     control_table.setStyle(TableStyle([
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#003B71')),
@@ -312,7 +257,7 @@ if page == "🏢 Portail Intervenant":
                     st.rerun()
                 else: st.error("Veuillez remplir vos informations nominatives.")
 
-    # ÉTAPE 2 : VIDÉO BRIDÉE & POP-UP FLASH DYNAMIQUE
+    # ÉTAPE 2 : VIDÉO BRIDÉE, POP-UP DYNAMIQUE ET FIN AUTOMATIQUE
     elif st.session_state.step == 2:
         st.markdown('<div class="section-card"><h2>🎥 Étape 2 : Sensibilisation Vidéo & Questions-Flash</h2></div>', unsafe_allow_html=True)
 
@@ -327,7 +272,7 @@ if page == "🏢 Portail Intervenant":
             flash_list = q_db.get("flash", [])
             elapsed_sec = int((datetime.now() - st.session_state.start_time).total_seconds())
 
-            # Détection d'une question-flash active non encore répondue
+            # Détection des questions-flash pendant la vidéo
             flash_active_idx = None
             for idx, f in enumerate(flash_list):
                 target_sec = (f.get("minutes", 0) * 60) + f.get("secondes", 0)
@@ -335,7 +280,6 @@ if page == "🏢 Portail Intervenant":
                     flash_active_idx = idx
                     break
 
-            # PAUSE & POP-UP
             if flash_active_idx is not None:
                 st.warning("⏸️ VIDÉO EN PAUSE — Question-Flash de vérification")
                 f_active = flash_list[flash_active_idx]
@@ -355,7 +299,7 @@ if page == "🏢 Portail Intervenant":
 
                 ans_f = st.radio("Votre réponse :", ["Vrai", "Faux"], key=f"popup_ans_{flash_active_idx}")
 
-                if st.button("Valider la réponse et reprendre la vidéo ▶️"):
+                if st.button("Valider la réponse et reprendre automatiquement la vidéo ➔"):
                     if ans_f == "Vrai" and f_active.get("declenche_engins"):
                         st.session_state.reponses_flash_engins = True
 
@@ -367,27 +311,49 @@ if page == "🏢 Portail Intervenant":
                     st.session_state.flash_repondues.add(flash_active_idx)
                     st.rerun()
 
+            elif st.session_state.get("video_ended", False):
+                # ÉCRAN DE FIN DE VIDÉO AVEC MESSAGE ADAPTATIF ET BOUTON DE REDIRECTION
+                st.markdown("---")
+                if st.session_state.total_flash_eval > 0 and st.session_state.score_flash_correct == st.session_state.total_flash_eval:
+                    st.success("🌟 **Super, vous avez été très attentif pendant la vidéo !**")
+                else:
+                    st.info("💡 **Veuillez rester bien attentif et concentré pour la suite.**")
+
+                if st.button("Passer au questionnaire de validation des connaissances ➔", type="primary", use_container_width=True):
+                    st.session_state.step = 3
+                    st.rerun()
+
             else:
                 v_url = st.session_state.video_url
                 if v_url:
                     if "iframe" in v_url.lower() or "embed" in v_url.lower():
                         st.components.v1.html(v_url, height=450)
                     else:
-                        video_html = f"""
-                        <div style="position: relative; width: 100%; max-width: 800px; margin: auto;">
-                            <video id="pgVideo" width="100%" autoplay style="border-radius: 8px; pointer-events: none;">
+                        # LECTEUR HTML5 STRICTEMENT BRIDÉ ET DÉTECTION FIN DE VIDÉO
+                        video_locked_html = f"""
+                        <div style="position: relative; width: 100%; max-width: 800px; margin: auto; user-select: none;">
+                            <video id="pgLockedVideo" width="100%" autoplay style="border-radius: 8px; pointer-events: none;">
                                 <source src="{v_url}" type="video/mp4">
-                                Votre navigateur ne supporte pas la lecture vidéo.
+                                Lecteur non supporté.
                             </video>
-                            <div style="position: absolute; top:0; left:0; width:100%; height:100%; z-index: 10;"></div>
+                            <div style="position: absolute; top:0; left:0; width:100%; height:100%; z-index: 999; background: transparent;"></div>
                         </div>
                         <script>
-                            const video = document.getElementById('pgVideo');
-                            video.addEventListener('ratechange', () => {{ if (video.playbackRate !== 1.0) video.playbackRate = 1.0; }});
-                            video.addEventListener('contextmenu', event => event.preventDefault());
+                            const vid = document.getElementById('pgLockedVideo');
+                            vid.play();
+
+                            setInterval(() => {{
+                                if (vid.playbackRate !== 1.0) {{ vid.playbackRate = 1.0; }}
+                            }}, 200);
+
+                            document.addEventListener('contextmenu', event => event.preventDefault());
                         </script>
                         """
-                        st.components.v1.html(video_html, height=460)
+                        st.components.v1.html(video_locked_html, height=460)
+
+                        if st.button("J'ai terminé le visionnage de la vidéo ➔"):
+                            st.session_state.video_ended = True
+                            st.rerun()
                 else:
                     st.info("📹 Vidéo en cours de lecture...")
 
@@ -397,11 +363,6 @@ if page == "🏢 Portail Intervenant":
     # ÉTAPE 3 : QUESTIONNAIRE GÉNÉRAL & ENGINS
     elif st.session_state.step == 3:
         st.markdown('<div class="section-card"><h2>📝 Étape 3 : Questionnaire de Validation</h2></div>', unsafe_allow_html=True)
-
-        if st.session_state.total_flash_eval > 0 and st.session_state.score_flash_correct == st.session_state.total_flash_eval:
-            st.success("🌟 **Super, vous avez été très attentif pendant la vidéo !** Passons maintenant au questionnaire de validation des connaissances.")
-        else:
-            st.info("💡 **Veuillez rester bien attentif et concentré** pour répondre au questionnaire ci-dessous.")
 
         q_db = charger_questions()
         reponses_gen = {}
@@ -443,11 +404,9 @@ if page == "🏢 Portail Intervenant":
                 score_gen = 0.0
                 fautes_elim = 0
                 
-                # 1. Calcul du temps effectif de présence
                 start_time = st.session_state.get("start_time", datetime.now())
                 temps_presence_min = int((datetime.now() - start_time).total_seconds() / 60)
 
-                # 2. Correction des réponses
                 reponses_gen = st.session_state.get("reponses_gen_val", {})
                 for idx, q in enumerate(q_db.get("general", [])):
                     opts = q["options"] if isinstance(q["options"], list) else [o.strip() for o in q["options"].split(",")]
@@ -460,7 +419,6 @@ if page == "🏢 Portail Intervenant":
                 ud["score_general"] = score_gen
                 ud["timestamp"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-                # 3. CONTRÔLE STRICT DES TEMPS LIMITES (40 MIN MINIMUM)
                 motif_echec = ""
                 if temps_presence_min < TEMPS_MIN_REQUIS:
                     motif_echec = f"Durée de session non conforme ({temps_presence_min} min vs {TEMPS_MIN_REQUIS} min minimum requis)."
@@ -500,6 +458,7 @@ if page == "🏢 Portail Intervenant":
                 del st.session_state["resultat_final"]
                 st.session_state.step = 1
                 st.session_state.video_started = False
+                st.session_state.video_ended = False
                 st.rerun()
 
 # =========================================================================
