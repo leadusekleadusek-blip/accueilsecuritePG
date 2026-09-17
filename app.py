@@ -47,6 +47,10 @@ st.markdown("""
             border: 1px solid rgba(128, 128, 128, 0.2);
             padding: 18px; border-radius: 8px; margin-bottom: 15px;
         }
+        .waiting-box {
+            background-color: #EBF8FF; border: 2px solid #3182CE;
+            padding: 30px; border-radius: 10px; text-align: center; margin: 20px 0;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -68,6 +72,7 @@ def charger_config():
     if not os.path.exists(QUESTIONS_FILE):
         cfg_def = {
             "video_url": "",
+            "casques_rouges": {},
             "sessions_presentiel": {},
             "rattrapage_codes": {},
             "flash": [
@@ -89,6 +94,7 @@ def charger_config():
         return cfg_def
     with open(QUESTIONS_FILE, 'r', encoding='utf-8') as f:
         data = json.load(f)
+        if "casques_rouges" not in data: data["casques_rouges"] = {}
         if "sessions_presentiel" not in data: data["sessions_presentiel"] = {}
         if "rattrapage_codes" not in data: data["rattrapage_codes"] = {}
         return data
@@ -134,7 +140,7 @@ def lire_airtable():
         return []
     except Exception: return []
 
-# INITIALISATION DES ÉTATS DE SESSION
+# INITIALISATION ÉTATS DE SESSION
 if "step" not in st.session_state: st.session_state.step = 1
 if "video_started" not in st.session_state: st.session_state.video_started = False
 if "video_ended" not in st.session_state: st.session_state.video_ended = False
@@ -144,6 +150,7 @@ if "reponses_flash_engins" not in st.session_state: st.session_state.reponses_fl
 if "score_flash_correct" not in st.session_state: st.session_state.score_flash_correct = 0
 if "total_flash_eval" not in st.session_state: st.session_state.total_flash_eval = 0
 if "flash_msg_temp" not in st.session_state: st.session_state.flash_msg_temp = False
+if "casque_rouge_logged" not in st.session_state: st.session_state.casque_rouge_logged = None
 
 # =========================================================================
 # 3. GENERATION PDF
@@ -231,21 +238,23 @@ def generer_pdf(d):
     return filepath
 
 # =========================================================================
-# 4. PORTAIL INTERVENANT
+# 4. NAVIGATION LATERALE
 # =========================================================================
 
 st.sidebar.markdown("# **P&G Amiens**")
 st.sidebar.markdown("---")
-page = st.sidebar.radio("Navigation", ["🏢 Portail Intervenant", "⚙️ Espace Administrateur HSE"])
+page = st.sidebar.radio("Navigation", ["🏢 Portail Intervenant", "⛑️ Espace Casque Rouge", "⚙️ Administrateur P&G"])
+cfg = charger_config()
 
+# =========================================================================
+# SECTION 1 : PORTAIL INTERVENANT
+# =========================================================================
 if page == "🏢 Portail Intervenant":
     st.markdown("""<div class="main-header"><h1>🛡️ Accueil Sécurité Site — Procter & Gamble Amiens</h1></div>""", unsafe_allow_html=True)
-    cfg = charger_config()
 
-    # ÉTAPE 1 : IDENTIFICATION & RACCORDEMENT SESSION
+    # ÉTAPE 1 : IDENTIFICATION & RACCORDEMENT
     if st.session_state.step == 1:
         st.markdown('<div class="section-card"><h2>👤 Étape 1 : Identification de l\'Intervenant</h2></div>', unsafe_allow_html=True)
-        
         mode_passation = st.radio("Sélectionnez votre mode de formation :", ["DISTANCIEL (Autonome)", "SALLE / PRÉSENTIEL (Code de session)"])
         
         with st.form("form_id"):
@@ -259,15 +268,23 @@ if page == "🏢 Portail Intervenant":
 
             code_session_input = ""
             if "PRÉSENTIEL" in mode_passation:
-                code_session_input = st.text_input("Code de session fourni par l'animateur (6 chiffres)", max_chars=6)
+                code_session_input = st.text_input("Code de session fourni par le Casque Rouge (6 chiffres)", max_chars=6)
 
             if st.form_submit_button("Valider mes informations ➔"):
                 if nom and prenom and entreprise:
                     if "PRÉSENTIEL" in mode_passation:
-                        sessions_vali = cfg.get("sessions_presentiel", {})
-                        if code_session_input not in sessions_vali:
+                        sessions_db = cfg.get("sessions_presentiel", {})
+                        if code_session_input not in sessions_db:
                             st.error("Code de session invalide ou expiré.")
                             st.stop()
+                        
+                        # Inscription du candidat dans la session
+                        s_data = sessions_db[code_session_input]
+                        candidat_key = f"{nom}_{prenom}"
+                        if candidat_key not in s_data.get("candidats_connectes", {}):
+                            s_data.setdefault("candidats_connectes", {})[candidat_key] = {"nom": nom, "prenom": prenom}
+                            cfg["sessions_presentiel"][code_session_input] = s_data
+                            sauvegarder_config(cfg)
                     
                     st.session_state.user_data = {
                         "nom": nom, "prenom": prenom, "entreprise": entreprise, 
@@ -275,11 +292,36 @@ if page == "🏢 Portail Intervenant":
                     }
                     st.session_state.step = 2
                     st.rerun()
-                else:
-                    st.error("Veuillez renseigner toutes vos informations nominatives.")
+                else: st.error("Veuillez renseigner toutes vos informations nominatives.")
 
-    # ÉTAPE 2 : VISIONNAGE VIDÉO STRICT & QUESTIONS-FLASH
+    # ÉTAPE 2 : ATTENTE SYNCHRO SALLE OU SÉANCE AUTONOME
     elif st.session_state.step == 2:
+        ud = st.session_state.get("user_data", {})
+        
+        # CAS PRESENTIEL : ATTENTE DU DÉMARRAGE PAR L'ANIMATEUR
+        if "PRÉSENTIEL" in ud.get("mode", ""):
+            c_code = ud.get("code_session", "")
+            s_data = cfg.get("sessions_presentiel", {}).get(c_code, {})
+            nb_actuel = len(s_data.get("candidats_connectes", {}))
+            nb_attendu = s_data.get("nb_attendus", 1)
+            is_launched = s_data.get("launched", False)
+
+            if not is_launched:
+                st.markdown(f"""
+                    <div class="waiting-box">
+                        <h2>⏳ Session Salle en attente de démarrage...</h2>
+                        <h3 style="color:#003B71; font-size:2rem;">👥 {nb_actuel} / {nb_attendu} candidat(s) connecté(s)</h3>
+                        <p>Veuillez patienter. La vidéo va se lancer sur l'écran principal de la salle.</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                time.sleep(3)
+                st.rerun()
+            else:
+                if not st.session_state.video_started:
+                    st.session_state.video_started = True
+                    st.session_state.start_time = datetime.now()
+
+        # DÉROULEMENT CLASSIQUE (DISTANCIEL OU SALLE DÉMARRÉE)
         st.markdown('<div class="section-card"><h2>🎥 Étape 2 : Sensibilisation Vidéo & Questions-Flash</h2></div>', unsafe_allow_html=True)
 
         if not st.session_state.video_started:
@@ -288,7 +330,6 @@ if page == "🏢 Portail Intervenant":
                 st.session_state.video_started = True
                 st.session_state.start_time = datetime.now()
                 st.rerun()
-
         else:
             flash_list = cfg.get("flash", [])
             elapsed_sec = int((datetime.now() - st.session_state.start_time).total_seconds())
@@ -366,37 +407,44 @@ if page == "🏢 Portail Intervenant":
                     st.rerun()
 
             else:
-                v_url = cfg.get("video_url", "")
-                if v_url:
-                    if "iframe" in v_url.lower() or "embed" in v_url.lower():
-                        st.components.v1.html(v_url, height=450)
-                        if st.button("J'ai terminé le visionnage ➔", type="primary"):
-                            st.session_state.video_ended = True
-                            st.rerun()
-                    else:
-                        v_code = f"""
-                        <div style="position: relative; width: 100%; max-width: 800px; margin: auto; user-select: none;">
-                            <video id="pgVideo" width="100%" autoplay style="border-radius: 8px; pointer-events: none;">
-                                <source src="{v_url}" type="video/mp4">
-                            </video>
-                            <div style="position: absolute; top:0; left:0; width:100%; height:100%; z-index: 999; background: transparent;"></div>
-                        </div>
-                        <script>
-                            const v = document.getElementById('pgVideo');
-                            v.play();
-                            setInterval(() => {{ if (v.playbackRate !== 1.0) v.playbackRate = 1.0; }}, 200);
-                            document.addEventListener('contextmenu', e => e.preventDefault());
-                        </script>
-                        """
-                        st.components.v1.html(v_code, height=460)
-
-                        col_a, col_b = st.columns([3, 1])
-                        with col_b:
-                            if st.button("J'ai terminé le visionnage ➔"):
+                # Si mode salle, la vidéo est sur l'écran principal
+                if "PRÉSENTIEL" in ud.get("mode", ""):
+                    st.info("📹 La vidéo est projetée sur l'écran principal de la salle. Gardez votre écran ouvert pour les questions-flash.")
+                    if st.button("J'ai terminé le visionnage de la vidéo ➔"):
+                        st.session_state.video_ended = True
+                        st.rerun()
+                else:
+                    v_url = cfg.get("video_url", "")
+                    if v_url:
+                        if "iframe" in v_url.lower() or "embed" in v_url.lower():
+                            st.components.v1.html(v_url, height=450)
+                            if st.button("J'ai terminé le visionnage ➔", type="primary"):
                                 st.session_state.video_ended = True
                                 st.rerun()
-                else:
-                    st.warning("⚠️ Aucune URL vidéo configurée. Veuillez l'ajouter dans l'Espace Administrateur.")
+                        else:
+                            v_code = f"""
+                            <div style="position: relative; width: 100%; max-width: 800px; margin: auto; user-select: none;">
+                                <video id="pgVideo" width="100%" autoplay style="border-radius: 8px; pointer-events: none;">
+                                    <source src="{v_url}" type="video/mp4">
+                                </video>
+                                <div style="position: absolute; top:0; left:0; width:100%; height:100%; z-index: 999; background: transparent;"></div>
+                            </div>
+                            <script>
+                                const v = document.getElementById('pgVideo');
+                                v.play();
+                                setInterval(() => {{ if (v.playbackRate !== 1.0) v.playbackRate = 1.0; }}, 200);
+                                document.addEventListener('contextmenu', e => e.preventDefault());
+                            </script>
+                            """
+                            st.components.v1.html(v_code, height=460)
+
+                            col_a, col_b = st.columns([3, 1])
+                            with col_b:
+                                if st.button("J'ai terminé le visionnage ➔"):
+                                    st.session_state.video_ended = True
+                                    st.rerun()
+                    else:
+                        st.warning("⚠️ Aucune URL vidéo configurée. Veuillez l'ajouter dans l'Espace Administrateur P&G.")
 
                 time.sleep(3)
                 st.rerun()
@@ -431,7 +479,7 @@ if page == "🏢 Portail Intervenant":
             st.session_state.step = 4
             st.rerun()
 
-    # ÉTAPE 4 : SIGNATURE, DÉTERMINATION SECRÈTE DU MOTIF & DÉLIVRANCE
+    # ÉTAPE 4 : SIGNATURE & SOUMISSION
     elif st.session_state.step == 4:
         st.markdown('<div class="section-card"><h2>✍️ Étape 4 : Attestation sur l\'honneur & Validation</h2></div>', unsafe_allow_html=True)
 
@@ -446,7 +494,6 @@ if page == "🏢 Portail Intervenant":
                 start_t = st.session_state.get("start_time", datetime.now())
                 temps_presence_min = int((datetime.now() - start_t).total_seconds() / 60)
 
-                # RÈGLES DE DURÉE STRICTES
                 min_requis = 50 if st.session_state.reponses_flash_engins else 40
                 max_autorise = 70 if st.session_state.reponses_flash_engins else 60
 
@@ -465,7 +512,6 @@ if page == "🏢 Portail Intervenant":
                 tot_flash_cfg = len(cfg.get("flash", []))
                 tot_flash_ok = len(st.session_state.flash_repondues)
 
-                # DÉTERMINATION MOTIF
                 motif_interne = ""
                 msg_candidat = ""
 
@@ -514,7 +560,7 @@ if page == "🏢 Portail Intervenant":
                 
                 st.markdown("---")
                 st.subheader("🔑 Rattrapage par Code Unique")
-                st.caption("Si vous disposez d'un code de rattrapage unique fourni par l'équipe HSE, vous pouvez le saisir ci-dessous pour repasser directement le questionnaire général.")
+                st.caption("Si vous disposez d'un code de rattrapage unique fourni par un Casque Rouge, saisissez-le ci-dessous.")
                 
                 code_ratt_input = st.text_input("Code de rattrapage (8 caractères)", max_chars=8).strip().upper()
                 if st.button("Déverrouiller le rattrapage ➔"):
@@ -540,60 +586,178 @@ if page == "🏢 Portail Intervenant":
                 st.rerun()
 
 # =========================================================================
-# 5. ESPACE ADMINISTRATEUR
+# SECTION 2 : ESPACE CASQUE ROUGE (ANIMATION SALLE)
 # =========================================================================
-elif page == "⚙️ Espace Administrateur HSE":
-    st.markdown("""<div class="main-header"><h1>🔒 Panneau d'Administration HSE — P&G Amiens</h1></div>""", unsafe_allow_html=True)
-    pwd = st.sidebar.text_input("Code secret Administrateur", type="password")
+elif page == "⛑️ Espace Casque Rouge":
+    st.markdown("""<div class="main-header"><h1>⛑️ Espace Animateurs Casque Rouge — P&G Amiens</h1></div>""", unsafe_allow_html=True)
+    db_casques = cfg.get("casques_rouges", {})
 
-    if pwd == ADMIN_PASSWORD:
+    if not st.session_state.casque_rouge_logged:
+        st.subheader("🔑 Connexion Casque Rouge")
+        with st.form("form_login_cr"):
+            email_cr = st.text_input("Adresse E-mail professionnelle").strip().lower()
+            pwd_cr = st.text_input("Mot de passe", type="password")
+            
+            if st.form_submit_button("Se connecter ➔"):
+                if email_cr in db_casques and db_casques[email_cr]["password"] == pwd_cr:
+                    st.session_state.casque_rouge_logged = db_casques[email_cr]
+                    st.success("Connexion réussie !")
+                    st.rerun()
+                else:
+                    st.error("Identifiants incorrects ou compte inexistant.")
+    else:
+        cr_user = st.session_state.casque_rouge_logged
+        st.sidebar.info(f"Connecté : **{cr_user['prenom']} {cr_user['nom']}**")
+        if st.sidebar.button("Déconnexion"):
+            st.session_state.casque_rouge_logged = None
+            st.rerun()
+
+        tab1, tab2, tab3 = st.tabs(["🎟️ Animation Session Salle (Kahoot)", "🔑 Codes de Rattrapage", "📊 Registre des Pass"])
+
+        # ONGLET 1 : SESSIONS SALLE AVEC COMPTEUR DE CONNECTÉS
+        with tab1:
+            st.subheader("1. Créer une nouvelle session Salle")
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                nb_attendus = st.number_input("Nombre de candidats attendus dans la salle", min_value=1, max_value=50, value=7)
+            
+            if st.button("🎟️ Activer la Session Salle ➔", type="primary"):
+                s_code = ''.join(random.choices(string.digits, k=6))
+                cfg["sessions_presentiel"][s_code] = {
+                    "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    "cr_email": cr_user["email"],
+                    "nb_attendus": nb_attendus,
+                    "candidats_connectes": {},
+                    "launched": False
+                }
+                sauvegarder_config(cfg)
+                st.session_state.active_room_code = s_code
+                st.rerun()
+
+            # SUIVI EN DIRECT DE LA SESSION SALLE EN COURS
+            if "active_room_code" in st.session_state and st.session_state.active_room_code in cfg.get("sessions_presentiel", {}):
+                current_room_code = st.session_state.active_room_code
+                room = cfg["sessions_presentiel"][current_room_code]
+
+                st.markdown("---")
+                st.subheader(f"📺 Écran de Contrôle Salle — Code : `{current_room_code}`")
+
+                connectes = room.get("candidats_connectes", {})
+                nb_conn = len(connectes)
+                nb_att = room.get("nb_attendus", 7)
+
+                st.markdown(f"""
+                    <div class="waiting-box">
+                        <h2 style="font-size: 2.5rem; color: #003B71;">👥 {nb_conn} / {nb_att} candidat(s) connecté(s)</h2>
+                    </div>
+                """, unsafe_allow_html=True)
+
+                if connectes:
+                    st.write("**Candidats dans la salle :** " + ", ".join([f"{v['prenom']} {v['nom']}" for v in connectes.values()]))
+
+                # Lancement automatique dès que le quota est atteint
+                if nb_conn >= nb_att and not room.get("launched"):
+                    room["launched"] = True
+                    cfg["sessions_presentiel"][current_room_code] = room
+                    sauvegarder_config(cfg)
+                    st.balloons()
+                    st.success("🎉 Tous les candidats attendus sont connectés ! Démarrage automatique de la vidéo.")
+                    st.rerun()
+
+                if not room.get("launched"):
+                    if st.button("▶️ Démarrer la vidéo pour la salle maintenant ➔"):
+                        room["launched"] = True
+                        cfg["sessions_presentiel"][current_room_code] = room
+                        sauvegarder_config(cfg)
+                        st.rerun()
+                else:
+                    st.success("🎥 **Vidéo de session en cours de projection sur cet écran principal.**")
+                    v_url = cfg.get("video_url", "")
+                    if v_url:
+                        if "iframe" in v_url.lower() or "embed" in v_url.lower():
+                            st.components.v1.html(v_url, height=500)
+                        else:
+                            st.video(v_url)
+
+                time.sleep(3)
+                st.rerun()
+
+        with tab2:
+            st.subheader("Générer un Code Unique de Rattrapage")
+            nom_candidat = st.text_input("Nom & Prénom de l'intervenant éligible").upper()
+            if st.button("Générer le Code Rattrapage ➔"):
+                if nom_candidat:
+                    r_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+                    cfg["rattrapage_codes"][r_code] = {
+                        "candidat": nom_candidat,
+                        "created_by": cr_user["email"],
+                        "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        "utilise": False
+                    }
+                    sauvegarder_config(cfg)
+                    st.success(f"Code généré pour {nom_candidat} : **{r_code}** (À usage unique)")
+                else:
+                    st.warning("Veuillez remplir le nom du candidat.")
+
+        with tab3:
+            st.subheader("Consultation du Registre des Accueils")
+            rec = lire_airtable()
+            if rec: st.dataframe(pd.DataFrame(rec), use_container_width=True)
+            else: st.info("Aucune donnée enregistrée dans Airtable.")
+
+# =========================================================================
+# SECTION 3 : ADMINISTRATEUR P&G
+# =========================================================================
+elif page == "⚙️ Administrateur P&G":
+    st.markdown("""<div class="main-header"><h1>⚙️ Panneau d'Administration Général P&G</h1></div>""", unsafe_allow_html=True)
+    pwd_admin = st.sidebar.text_input("Code Secret Admin P&G", type="password")
+
+    if pwd_admin == ADMIN_PASSWORD:
         st.sidebar.success("Accès Autorisé")
-        admin_section = st.sidebar.radio("📌 Section :", [
-            "⚙️ 1. Vidéo Cloud & Sessions Salle", 
-            "🔑 2. Générateur Codes Rattrapage",
+        admin_section = st.sidebar.radio("📌 Section Admin :", [
+            "👥 1. Gestion Casques Rouges",
+            "⚙️ 2. Vidéo Cloud", 
             "⚡ 3. Questions-Flash", 
             "📋 4. Questionnaire Général", 
             "🚜 5. Questionnaire Engins", 
             "📊 6. Registre Airtable"
         ])
-        cfg_admin = charger_config()
 
-        if "⚙️ 1." in admin_section:
-            st.subheader("1. Vidéo Cloud & Sessions Présentielles / Salle")
-            v_input = st.text_area("URL Directe MP4 ou Code Embed <iframe>", value=cfg_admin.get("video_url", ""), height=100)
-            if st.button("💾 Enregistrer l'URL Vidéo"):
-                cfg_admin["video_url"] = v_input
-                sauvegarder_config(cfg_admin)
-                st.success("URL vidéo sauvegardée !")
+        if "👥 1." in admin_section:
+            st.subheader("1. Gestion des Utilisateurs Casque Rouge")
+            with st.form("form_add_cr"):
+                c_nom = st.text_input("Nom").upper()
+                c_prenom = st.text_input("Prénom").capitalize()
+                c_email = st.text_input("Adresse e-mail professionnelle").strip().lower()
+                c_pwd = st.text_input("Mot de passe initial défini", type="password")
+
+                if st.form_submit_button("Créer le compte Casque Rouge ➔"):
+                    if c_nom and c_prenom and c_email and c_pwd:
+                        cfg["casques_rouges"][c_email] = {
+                            "nom": c_nom, "prenom": c_prenom, "email": c_email,
+                            "password": c_pwd, "confirme": True,
+                            "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        sauvegarder_config(cfg)
+                        st.success(f"Compte Casque Rouge créé pour **{c_prenom} {c_nom}** ({c_email}) !")
+                    else: st.error("Veuillez remplir l'ensemble des champs.")
 
             st.markdown("---")
-            st.subheader("🎟️ Génération de Code de Session Salle (Kahoot)")
-            c_mail = st.text_input("Adresse E-mail pour recevoir le code de session", value="admin.hse@pg.com")
-            if st.button("Créer une nouvelle session Salle ➔"):
-                new_code = ''.join(random.choices(string.digits, k=6))
-                cfg_admin["sessions_presentiel"][new_code] = {"created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "email": c_mail}
-                sauvegarder_config(cfg_admin)
-                st.success(f"Session créée ! Code de session : **{new_code}** (Envoyé à {c_mail})")
+            st.subheader("Liste des Casques Rouges habilités :")
+            st.json(cfg.get("casques_rouges", {}))
 
-        elif "🔑 2." in admin_section:
-            st.subheader("🔑 Génération de Codes de Rattrapage Uniques")
-            nom_c = st.text_input("Nom & Prénom du candidat éligible").upper()
-            if st.button("Générer un Code Unique de Rattrapage"):
-                if nom_c:
-                    r_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-                    cfg_admin["rattrapage_codes"][r_code] = {"candidat": nom_c, "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "utilise": False}
-                    sauvegarder_config(cfg_admin)
-                    st.success(f"Code généré pour {nom_c} : **{r_code}** (Valable 1 seule fois)")
-                else:
-                    st.warning("Veuillez saisir le nom du candidat.")
-
-            st.markdown("### Codes actifs en base :")
-            st.json(cfg_admin.get("rattrapage_codes", {}))
+        elif "⚙️ 2." in admin_section:
+            st.subheader("2. Vidéo Cloud Entreprise (.mp4 / Embed)")
+            v_input = st.text_area("URL Directe MP4 ou Code Embed <iframe>", value=cfg.get("video_url", ""), height=100)
+            if st.button("💾 Enregistrer l'URL Vidéo"):
+                cfg["video_url"] = v_input
+                sauvegarder_config(cfg)
+                st.success("URL vidéo sauvegardée définitivement !")
 
         elif "⚡ 3." in admin_section:
             st.subheader("3. Banques de Questions-Flash")
             new_flash = []
-            flash_curr = cfg_admin.get("flash", [])
+            flash_curr = cfg.get("flash", [])
             nb_f = st.number_input("Nombre de points d'arrêt flash", min_value=1, max_value=15, value=len(flash_curr))
 
             for j in range(int(nb_f)):
@@ -621,14 +785,14 @@ elif page == "⚙️ Espace Administrateur HSE":
                     new_flash.append({"minutes": f_min, "secondes": f_sec, "banque_questions": parsed_b, "mode_reponse": mode_f, "declenche_engins": f_eng})
 
             if st.button("💾 Enregistrer les Questions-Flash"):
-                cfg_admin["flash"] = new_flash
-                sauvegarder_config(cfg_admin)
+                cfg["flash"] = new_flash
+                sauvegarder_config(cfg)
                 st.success("Banques de questions-flash sauvegardées !")
 
         elif "📋 4." in admin_section:
             st.subheader("4. Questionnaire Général")
             new_gen = []
-            gen_curr = cfg_admin.get("general", [])
+            gen_curr = cfg.get("general", [])
             nb_g = st.number_input("Nombre de questions générales", min_value=1, max_value=30, value=len(gen_curr))
 
             for i in range(int(nb_g)):
@@ -653,14 +817,14 @@ elif page == "⚙️ Espace Administrateur HSE":
                     new_gen.append({"id": f"q_{i+1}", "texte": q_txt, "options": opts_list, "reponse": rep_idx, "points": pts, "eliminatoire": is_elim})
 
             if st.button("💾 Enregistrer le Questionnaire Général"):
-                cfg_admin["general"] = new_gen
-                sauvegarder_config(cfg_admin)
+                cfg["general"] = new_gen
+                sauvegarder_config(cfg)
                 st.success("Questionnaire général sauvegardé !")
 
         elif "🚜 5." in admin_section:
             st.subheader("5. Module Spécifique Engins / Grues")
             new_eng = []
-            eng_curr = cfg_admin.get("engins", [])
+            eng_curr = cfg.get("engins", [])
             nb_e = st.number_input("Nombre de questions engins", min_value=0, max_value=15, value=len(eng_curr))
 
             for k in range(int(nb_e)):
@@ -682,8 +846,8 @@ elif page == "⚙️ Espace Administrateur HSE":
                     new_eng.append({"id": f"q_eng_{k+1}", "texte": q_e_txt, "options": opts_e_list, "reponse": rep_e_idx, "points": pts_e})
 
             if st.button("💾 Enregistrer le Questionnaire Engins"):
-                cfg_admin["engins"] = new_eng
-                sauvegarder_config(cfg_admin)
+                cfg["engins"] = new_eng
+                sauvegarder_config(cfg)
                 st.success("Questionnaire engins sauvegardé !")
 
         elif "📊 6." in admin_section:
@@ -692,4 +856,4 @@ elif page == "⚙️ Espace Administrateur HSE":
             if rec: st.dataframe(pd.DataFrame(rec), use_container_width=True)
             else: st.info("Aucune donnée disponible.")
     else:
-        st.info("Saisissez le code secret administrateur pour accéder à la gestion.")
+        st.info("Saisissez le code secret administrateur P&G pour accéder à la gestion.")
