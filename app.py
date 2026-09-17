@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import random
 import requests
 from datetime import datetime
@@ -12,7 +13,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 import qrcode
 
 # =========================================================================
-# 1. CONFIGURATION & STYLES ADAPTATIFS
+# 1. CONFIGURATION INITIALE & STYLES ADAPTATIFS
 # =========================================================================
 
 st.set_page_config(
@@ -74,12 +75,13 @@ def charger_questions():
         def_q = {
             "flash": [
                 {
-                    "minutes": 8, "secondes": 30,
+                    "minutes": 1, "secondes": 30,
                     "banque_questions": [
-                        {"texte": "Allez-vous réaliser des travaux par point chaud ?", "reponse": "Faux"},
-                        {"texte": "Réalisez-vous des travaux générant des étincelles ?", "reponse": "Faux"}
+                        {"texte": "La limite de vitesse sur le site est de 20km/h", "reponse": "Vrai"},
+                        {"texte": "La limite de vitesse sur le site est de 30km/h", "reponse": "Faux"},
+                        {"texte": "Il n'existe pas de limite de vitesse sur le site", "reponse": "Faux"}
                     ],
-                    "mode_reponse": "Pas de bonne réponse (Orientation / Info)",
+                    "mode_reponse": "Avec réponse attendue (Évalué)",
                     "declenche_engins": False
                 }
             ],
@@ -167,7 +169,7 @@ def generer_pdf(d):
     return filepath
 
 # =========================================================================
-# 3. INTERFACE UTILISATEUR
+# 3. PORTAIL INTERVENANT
 # =========================================================================
 
 st.sidebar.markdown("# **P&G Amiens**")
@@ -198,12 +200,12 @@ if page == "🏢 Portail Intervenant":
                     st.rerun()
                 else: st.error("Veuillez remplir vos informations nominatives.")
 
-    # ÉTAPE 2 : VIDÉO & QUESTIONS-FLASH TIMÉES (AVEC PAUSE VIDÉO)
+    # ÉTAPE 2 : VIDÉO BRIDÉE & POP-UP FLASH DYNAMIQUE
     elif st.session_state.step == 2:
         st.markdown('<div class="section-card"><h2>🎥 Étape 2 : Sensibilisation Vidéo & Questions-Flash</h2></div>', unsafe_allow_html=True)
 
         if not st.session_state.video_started:
-            st.info("Cliquez sur le bouton ci-dessous pour démarrer la séance. Le chrono officiel sera activé.")
+            st.info("Cliquez sur le bouton ci-dessous pour démarrer la séance. Le chronomètre officiel sera activé.")
             if st.button("▶️ LANCER LA VIDÉO D'ACCUEIL SÉCURITÉ", type="primary"):
                 st.session_state.video_started = True
                 st.session_state.start_time = datetime.now()
@@ -213,7 +215,7 @@ if page == "🏢 Portail Intervenant":
             flash_list = q_db.get("flash", [])
             elapsed_sec = int((datetime.now() - st.session_state.start_time).total_seconds())
 
-            # Recherche d'une question-flash active non encore répondue au timing
+            # Détection d'une question-flash active non encore répondue
             flash_active_idx = None
             for idx, f in enumerate(flash_list):
                 target_sec = (f.get("minutes", 0) * 60) + f.get("secondes", 0)
@@ -221,12 +223,12 @@ if page == "🏢 Portail Intervenant":
                     flash_active_idx = idx
                     break
 
-            # SI UNE QUESTION FLASH EST DÉCLENCHÉE : PAUSE ET MASQUAGE VIDÉO
+            # SI UNE QUESTION-FLASH EST DÉCLENCHÉE : PAUSE ET POP-UP EXCLUSIF
             if flash_active_idx is not None:
                 st.warning("⏸️ VIDÉO EN PAUSE — Question-Flash de vérification")
                 f_active = flash_list[flash_active_idx]
 
-                # Tirage au sort d'une seule question dans la banque si pas encore fait
+                # Tirage au sort d'une question dans la banque si pas fait
                 if flash_active_idx not in st.session_state.questions_flash_tirees:
                     banque = f_active.get("banque_questions", [])
                     st.session_state.questions_flash_tirees[flash_active_idx] = random.choice(banque) if banque else {"texte": "Question indisponible", "reponse": "Vrai"}
@@ -236,7 +238,7 @@ if page == "🏢 Portail Intervenant":
                 st.markdown(f'''
                     <div class="flash-popup">
                         <h3>⚡ Question-Flash ({f_active.get("minutes",0)}m{f_active.get("secondes",0)}s)</h3>
-                        <p style="font-size:1.1rem; font-weight:600;">{q_selected["texte"]}</p>
+                        <p style="font-size:1.2rem; font-weight:600;">{q_selected["texte"]}</p>
                     </div>
                 ''', unsafe_allow_html=True)
 
@@ -255,19 +257,33 @@ if page == "🏢 Portail Intervenant":
                     st.rerun()
 
             else:
-                # AFFICHAGE NORMALE DU LECTEUR SI PAS DE POP-UP
+                # LECTEUR VIDÉO BRIDÉ (SANS CURSEUR NI AVANCE RAPIDE)
                 v_url = st.session_state.video_url
                 if v_url:
                     if "iframe" in v_url.lower() or "embed" in v_url.lower():
                         st.components.v1.html(v_url, height=450)
                     else:
-                        st.video(v_url)
+                        video_html = f"""
+                        <div style="position: relative; width: 100%; max-width: 800px; margin: auto;">
+                            <video id="pgVideo" width="100%" autoplay style="border-radius: 8px; pointer-events: none;">
+                                <source src="{v_url}" type="video/mp4">
+                                Votre navigateur ne supporte pas la lecture vidéo.
+                            </video>
+                            <div style="position: absolute; top:0; left:0; width:100%; height:100%; z-index: 10;"></div>
+                        </div>
+                        <script>
+                            const video = document.getElementById('pgVideo');
+                            video.addEventListener('ratechange', () => {{ if (video.playbackRate !== 1.0) video.playbackRate = 1.0; }});
+                            video.addEventListener('contextmenu', event => event.preventDefault());
+                        </script>
+                        """
+                        st.components.v1.html(video_html, height=460)
                 else:
                     st.info("📹 Vidéo en cours de lecture...")
 
-                if st.button("Passer au Questionnaire Final ➔"):
-                    st.session_state.step = 3
-                    st.rerun()
+                # Auto-rafraîchissement toutes les 3s pour vérifier le chrono des questions-flash
+                time.sleep(3)
+                st.rerun()
 
     # ÉTAPE 3 : QUESTIONNAIRE GÉNÉRAL & ENGINS
     elif st.session_state.step == 3:
@@ -361,7 +377,7 @@ if page == "🏢 Portail Intervenant":
                 st.rerun()
 
 # =========================================================================
-# 4. ESPACE ADMINISTRATEUR (BANQUE DE QUESTIONS FLASH & OPTION SAISIE)
+# 4. ESPACE ADMINISTRATEUR
 # =========================================================================
 elif page == "⚙️ Espace Administrateur HSE":
     st.markdown("""<div class="main-header"><h1>🔒 Panneau d'Administration HSE — P&G Amiens</h1></div>""", unsafe_allow_html=True)
